@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Local shelf for the Pi. Serves the page and starts the real programs."""
+import base64
 import json
 import os
 import re
@@ -168,6 +169,72 @@ def list_apps(host):
     return apps
 
 
+def terminal():
+    binary = which(("lxterminal", "x-terminal-emulator", "foot", "kitty", "gnome-terminal", "konsole", "xterm"))
+    if not binary:
+        raise RuntimeError("No terminal program is installed")
+    spawn([binary])
+
+
+def wallpaper_roots():
+    roots = [HOME / "Pictures", HOME / "Downloads"]
+    for extra in (Path("/usr/share/rpd-wallpaper"), Path("/usr/share/backgrounds")):
+        if extra.is_dir():
+            roots.append(extra)
+    return roots
+
+
+def allowed_image(path):
+    path = path.resolve()
+    if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"} or not path.is_file():
+        return False
+    return any(path == root.resolve() or root.resolve() in path.parents for root in wallpaper_roots() if root.exists())
+
+
+def list_wallpapers():
+    found = []
+    for root in wallpaper_roots():
+        if not root.is_dir():
+            continue
+        for child in sorted(root.rglob("*")):
+            if child.is_file() and allowed_image(child) and not child.name.startswith("."):
+                found.append({"name": child.name, "path": str(child)})
+            if len(found) >= 40:
+                return found
+    return found
+
+
+def save_wallpaper(name, data_b64):
+    raw = base64.b64decode(data_b64)
+    if len(raw) > 8_000_000:
+        raise RuntimeError("That picture is too large")
+    folder = HOME / "Pictures"
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "", Path(name).name) or "wallpaper.jpg"
+    if Path(safe).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        safe += ".jpg"
+    target = folder / safe
+    target.write_bytes(raw)
+    return str(target)
+
+
+def run_shell(command):
+    command = str(command or "").strip()
+    if not command:
+        raise RuntimeError("Type a command")
+    if len(command) > 400:
+        raise RuntimeError("Command is too long")
+    proc = subprocess.run(
+        ["bash", "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        cwd=str(HOME),
+        env=session_env(),
+    )
+    return {"output": ((proc.stdout or "") + (proc.stderr or ""))[-8000:], "code": proc.returncode}
+
+
 def retropie():
     binary = which(("emulationstation", "retroarch"))
     if not binary:
@@ -195,15 +262,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_json(self):
+    def read_json(self, limit=16384):
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 16384:
+        if length > limit:
             raise RuntimeError("Request is too large")
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw.decode() or "{}")
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/wallpapers":
+            self.send_json(200, {"wallpapers": list_wallpapers()})
+            return
+        if parsed.path == "/api/wallpaper-file":
+            query = parse_qs(parsed.query)
+            target = Path(query.get("path", [""])[0])
+            if not allowed_image(target):
+                self.send_error(404)
+                return
+            data = target.read_bytes()
+            kind = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[target.suffix.lower()]
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/moonlight/pair":
             query = parse_qs(parsed.query)
             host = query.get("host", [""])[0]
@@ -280,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         try:
-            body = self.read_json()
+            body = self.read_json(12_000_000 if parsed.path == "/api/wallpaper" else 16384)
         except (RuntimeError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
             return
@@ -303,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
                     browser("https://www.xbox.com/play")
                 elif kind == "retropie":
                     retropie()
+                elif kind == "terminal":
+                    terminal()
                 else:
                     raise RuntimeError("Unknown app")
             elif parsed.path == "/api/moonlight/pair":
@@ -312,6 +398,13 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/moonlight/list":
                 host = str(body.get("host") or "")
                 self.send_json(200, {"apps": list_apps(host)})
+                return
+            elif parsed.path == "/api/shell":
+                self.send_json(200, run_shell(body.get("command")))
+                return
+            elif parsed.path == "/api/wallpaper":
+                path = save_wallpaper(str(body.get("name") or "wallpaper.jpg"), str(body.get("data") or ""))
+                self.send_json(200, {"path": path})
                 return
             elif parsed.path == "/api/power":
                 action = body.get("action")

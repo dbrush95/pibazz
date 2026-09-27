@@ -5,6 +5,7 @@ const APPS = [
   ["gamepass", "Game Pass"],
   ["browser", "Browser"],
   ["files", "Files"],
+  ["terminal", "Terminal"],
   ["settings", "Settings"],
 ];
 
@@ -31,6 +32,7 @@ const ICONS = {
   gamepass: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a5 5 0 0 1 0-10 6 6 0 0 1 11 2 4 4 0 0 1 0 8H7z"/></svg>',
   browser: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
   files: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  terminal: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>',
   settings: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></svg>',
   wifi: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>',
 };
@@ -38,7 +40,7 @@ const ICONS = {
 const defaults = {
   host: "", app: "Steam", resolution: "1080p", fps: 60, bitrate: 20000, codec: "H.264",
   theme: "light", desktop: "paper", hostname: "bazzpi", country: "US",
-  timezone: "America/New_York", ssh: true, volume: 70, paired: false,
+  timezone: "America/New_York", ssh: true, volume: 70, paired: false, wallpaper: "",
 };
 
 const state = {
@@ -61,6 +63,8 @@ const state = {
   status: {},
   pair: { status: "idle", pin: "", log: "" },
   apps: ["Steam", "Desktop"],
+  wallpapers: [],
+  termLog: "bazzpi terminal\nCommands run on this Pi.\n",
 };
 
 function load(key, fallback) {
@@ -133,8 +137,11 @@ function draw() {
   }
   const windows = state.open.filter((id) => !state.min.includes(id)).map((id) => windowFor(id)).join("");
   const apps = APPS.filter((app) => app[1].toLowerCase().includes(state.query.toLowerCase()));
+  const wall = state.settings.wallpaper
+    ? ` style="background-image:url('/api/wallpaper-file?path=${encodeURIComponent(state.settings.wallpaper)}');background-size:cover;background-position:center"`
+    : "";
   desk.innerHTML = `
-    <div class="wallpaper"></div>
+    <div class="wallpaper"${wall}></div>
     ${state.notice ? `<div class="toast">${escapeHtml(state.notice)}</div>` : ""}
     <div class="stage">${windows}</div>
     ${state.launcher ? launcherHtml(apps) : ""}
@@ -194,6 +201,7 @@ function bodyFor(id) {
   if (id === "retropie") return retroBody();
   if (id === "gamepass") return gameBody();
   if (id === "browser") return browserBody();
+  if (id === "terminal") return terminalBody();
   if (id === "files") return `<div id="files">Loading the Pi…</div>`;
   return settingsBody();
 }
@@ -354,6 +362,74 @@ function gameBody() {
     <p class="fine">xbox.com/play</p>`;
 }
 
+function terminalBody() {
+  return `<h1 class="h1">Terminal</h1>
+    <p class="sub">Commands run on this Pi. Open terminal starts a full window for programs that need it.</p>
+    <div class="term" data-term>${escapeHtml(state.termLog)}</div>
+    <form class="termline" data-shell>
+      <span>$</span>
+      <input data-command aria-label="Command" autocomplete="off" />
+    </form>
+    <button type="button" class="btn" data-stream="terminal">Open terminal</button>`;
+}
+
+function wallCards() {
+  const items = state.wallpapers || [];
+  if (!items.length) return `<p class="fine">No pictures in Pictures or Downloads yet.</p>`;
+  return items.map((item) => `<button type="button" class="deskpick ${state.settings.wallpaper === item.path ? "on" : ""}" data-wall="${escapeHtml(item.path)}">${escapeHtml(item.name)}</button>`).join("");
+}
+
+async function loadWallpapers() {
+  try {
+    const data = await api("/api/wallpapers");
+    state.wallpapers = data.wallpapers || [];
+    const box = document.querySelector("[data-walls]");
+    if (!box) return;
+    box.innerHTML = wallCards();
+    box.querySelectorAll("[data-wall]").forEach((node) => node.addEventListener("click", () => patch({ wallpaper: node.dataset.wall })));
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function uploadWallpaper(file) {
+  if (!file) return;
+  const data = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+    reader.onerror = () => reject(new Error("Could not read that picture"));
+    reader.readAsDataURL(file);
+  });
+  try {
+    const saved = await api("/api/wallpaper", { name: file.name, data });
+    patch({ wallpaper: saved.path });
+    state.wallsLoaded = false;
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function runShell(event) {
+  event.preventDefault();
+  const input = document.querySelector("[data-command]");
+  const command = input?.value.trim() || "";
+  if (!command) return;
+  if (input) input.value = "";
+  state.termLog += `$ ${command}\n`;
+  const box = document.querySelector("[data-term]");
+  if (box) box.textContent = state.termLog;
+  try {
+    const data = await api("/api/shell", { command });
+    state.termLog += `${data.output || ""}${data.output && data.output.endsWith("\n") ? "" : "\n"}`;
+  } catch (error) {
+    state.termLog += `${error.message}\n`;
+  }
+  if (box) {
+    box.textContent = state.termLog;
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
 function browserBody() {
   return `<h1 class="h1">Browser</h1>
     <div class="chrome"><input class="field omni" data-url value="${escapeHtml(state.url)}" /><button type="button" class="btn primary" data-stream="browser">Open</button></div>
@@ -371,7 +447,14 @@ function settingsBody() {
         <button type="button" class="btn ${s.theme === "dark" ? "primary" : ""}" data-theme="dark">Dark</button>
       </div>
       <div class="desks">
-        ${DESKS.map(([id, name]) => `<button type="button" class="deskpick ${s.desktop === id ? "on" : ""}" data-desk="${id}"><span class="swatch ${id}"></span>${name}</button>`).join("")}
+        ${DESKS.map(([id, name]) => `<button type="button" class="deskpick ${s.desktop === id && !s.wallpaper ? "on" : ""}" data-desk="${id}"><span class="swatch ${id}"></span>${name}</button>`).join("")}
+      </div>
+      <h2 class="h2">Your picture</h2>
+      <p class="sub">A picture covers the color. Choose one already on the Pi, or add one.</p>
+      <div class="desks" data-walls>${wallCards()}</div>
+      <div class="row">
+        <label class="btn primary">Choose a picture<input class="filepick" type="file" accept="image/*" data-upload /></label>
+        ${s.wallpaper ? `<button type="button" class="btn" data-clear-wall>Use the color</button>` : ""}
       </div>`;
   } else if (state.section === "Moonlight") {
     pane = `<h1 class="h1">Moonlight</h1>
@@ -453,7 +536,10 @@ function bind() {
   desk.querySelectorAll("[data-stream]").forEach((node) => node.addEventListener("click", () => stream(node.dataset.stream)));
   desk.querySelectorAll("[data-section]").forEach((node) => node.addEventListener("click", () => { state.section = node.dataset.section; draw(); }));
   desk.querySelectorAll("[data-theme]").forEach((node) => node.addEventListener("click", () => patch({ theme: node.dataset.theme })));
-  desk.querySelectorAll("[data-desk]").forEach((node) => node.addEventListener("click", () => patch({ desktop: node.dataset.desk })));
+  desk.querySelector("[data-shell]")?.addEventListener("submit", runShell);
+  desk.querySelector("[data-upload]")?.addEventListener("change", (event) => uploadWallpaper(event.target.files?.[0]));
+  desk.querySelector("[data-clear-wall]")?.addEventListener("click", () => patch({ wallpaper: "" }));
+  desk.querySelectorAll("[data-desk]").forEach((node) => node.addEventListener("click", () => patch({ desktop: node.dataset.desk, wallpaper: "" })));
   desk.querySelectorAll("[data-pace]").forEach((node) => node.addEventListener("click", () => { state.pace = node.dataset.pace; draw(); }));
   desk.querySelectorAll("[data-console]").forEach((node) => node.addEventListener("click", () => { state.picked = node.dataset.console; draw(); }));
   desk.querySelector("[data-apply]")?.addEventListener("click", applySystem);
@@ -476,6 +562,10 @@ function bind() {
     draw();
   });
   if (state.focus === "files") loadFiles();
+  if (state.focus === "settings" && state.section === "Appearance" && !state.wallsLoaded) {
+    state.wallsLoaded = true;
+    loadWallpapers();
+  }
   ensurePoll();
 }
 
