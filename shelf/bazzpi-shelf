@@ -16,6 +16,47 @@ if [ ! -f /tmp/bazzpi-update-ran ]; then
   fi
 fi
 
+# Turn on the Pi 4 hardware video decoder. raspi-config writes gpu_mem=128.
+# The codec device is bcm2835-codec. A changed boot file needs one more reboot.
+mark="$HOME/.config/bazzpi/hwvideo-128"
+if [ ! -f "$mark" ]; then
+  mkdir -p "$HOME/.config/bazzpi"
+  cfg=""
+  for f in /boot/firmware/config.txt /boot/config.txt; do
+    if [ -f "$f" ]; then
+      cfg="$f"
+      break
+    fi
+  done
+  reboot=0
+  if [ -n "$cfg" ] && ! grep -q '^gpu_mem=128' "$cfg"; then
+    sudo -n raspi-config nonint do_memory_split 128 || echo 'gpu_mem=128' | sudo -n tee -a "$cfg" >/dev/null
+    reboot=1
+  fi
+  if [ -n "$cfg" ] && ! grep -Eq '^dtoverlay=vc4-(fkms|kms)-v3d' "$cfg"; then
+    echo 'dtoverlay=vc4-kms-v3d' | sudo -n tee -a "$cfg" >/dev/null
+    reboot=1
+  fi
+  if ! id -nG | grep -qw video || ! id -nG | grep -qw render; then
+    sudo -n usermod -aG video,render,input "$(id -un)" || true
+    reboot=1
+  fi
+  if ! grep -qx 'bcm2835-codec' /etc/modules 2>/dev/null; then
+    echo 'bcm2835-codec' | sudo -n tee -a /etc/modules >/dev/null || true
+  fi
+  sudo -n modprobe bcm2835-codec 2>/dev/null || true
+  if ! command -v wlrctl >/dev/null 2>&1; then
+    sudo -n apt-get update -qq || true
+    sudo -n apt-get install -y wlrctl || true
+  fi
+  sudo -n apt-get install -y --only-upgrade moonlight-qt 2>/dev/null || true
+  touch "$mark"
+  if [ "$reboot" -eq 1 ]; then
+    sudo -n systemctl reboot || true
+    exit 0
+  fi
+fi
+
 if ! curl -sf --max-time 1 http://127.0.0.1:8765/api/status >/dev/null; then
   python3 /opt/bazzpi-shelf/shelf.py >>/tmp/bazzpi-shelf.log 2>&1 &
 fi
@@ -28,5 +69,5 @@ if command -v chromium >/dev/null 2>&1; then
 else
   CHROME=chromium-browser
 fi
-"$CHROME" --ozone-platform=wayland --app=http://127.0.0.1:8765/ --start-maximized --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 || \
-"$CHROME" --app=http://127.0.0.1:8765/ --start-maximized --noerrdialogs --disable-session-crashed-bubble --disable-infobars
+"$CHROME" --kiosk --ozone-platform=wayland --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 --app=http://127.0.0.1:8765/ || \
+"$CHROME" --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --app=http://127.0.0.1:8765/
