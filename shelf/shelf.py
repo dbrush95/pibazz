@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Local shelf for the Pi. Serves the page and starts the real programs."""
+import json
+import os
+import re
+import shutil
+import subprocess
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+ROOT = Path(__file__).resolve().parent
+HOME = Path(os.environ.get("BAZZPI_HOME", str(Path.home()))).resolve()
+PORT = 8765
+HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
+APP_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".ttf": "font/ttf",
+}
+
+
+def session_env():
+    env = os.environ.copy()
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+    env.setdefault("DISPLAY", ":0")
+    return env
+
+
+def which(names):
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def spawn(argv):
+    subprocess.Popen(
+        argv,
+        env=session_env(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def browser(url):
+    binary = which(("chromium", "chromium-browser"))
+    if not binary:
+        raise RuntimeError("Chromium is not installed")
+    profile = HOME / ".config" / "bazzpi-browser"
+    spawn([binary, f"--user-data-dir={profile}", "--new-window", url])
+
+
+def moonlight(host, app, width, height, fps, bitrate):
+    binary = which(("moonlight-qt", "moonlight"))
+    if not binary:
+        raise RuntimeError("Moonlight is not installed yet. Leave the Pi online and try again.")
+    if not host:
+        spawn([binary])
+        return
+    if not HOST_RE.match(host) or not APP_RE.match(app):
+        raise RuntimeError("That address or app name is not allowed")
+    spawn(
+        [
+            binary,
+            "stream",
+            host,
+            app,
+            "--resolution",
+            f"{width}x{height}",
+            "--fps",
+            str(fps),
+            "--bitrate",
+            str(bitrate),
+            "--video-codec",
+            "H.264",
+        ]
+    )
+
+
+def retropie():
+    binary = which(("emulationstation", "retroarch"))
+    if not binary:
+        raise RuntimeError("RetroPie is not installed. Run the RetroPie setup from the shelf first.")
+    spawn([binary])
+
+
+def safe_path(rel):
+    rel = (rel or "").strip().lstrip("/")
+    target = (HOME / rel).resolve()
+    if target != HOME and HOME not in target.parents:
+        raise RuntimeError("That folder is outside the home directory")
+    return target
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def send_json(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > 16384:
+            raise RuntimeError("Request is too large")
+        raw = self.rfile.read(length) if length else b"{}"
+        return json.loads(raw.decode() or "{}")
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/status":
+            self.send_json(
+                200,
+                {
+                    "hostname": os.uname().nodename,
+                    "user": os.environ.get("USER", "play"),
+                    "home": str(HOME),
+                    "moonlight": bool(which(("moonlight-qt", "moonlight"))),
+                    "chromium": bool(which(("chromium", "chromium-browser"))),
+                    "retropie": bool(which(("emulationstation", "retroarch"))),
+                },
+            )
+            return
+        if parsed.path == "/api/files":
+            query = parse_qs(parsed.query)
+            try:
+                folder = safe_path(query.get("path", [""])[0])
+            except RuntimeError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
+            if not folder.is_dir():
+                self.send_json(404, {"error": "No such folder"})
+                return
+            entries = []
+            for child in sorted(folder.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+                if child.name.startswith("."):
+                    continue
+                entries.append(
+                    {
+                        "name": child.name,
+                        "kind": "dir" if child.is_dir() else "file",
+                        "size": child.stat().st_size if child.is_file() else 0,
+                    }
+                )
+            rel = "" if folder == HOME else str(folder.relative_to(HOME))
+            self.send_json(200, {"path": rel, "entries": entries})
+            return
+        if parsed.path == "/api/file":
+            query = parse_qs(parsed.query)
+            try:
+                target = safe_path(query.get("path", [""])[0])
+            except RuntimeError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
+            if not target.is_file() or target.stat().st_size > 200000:
+                self.send_json(404, {"error": "Cannot show that file"})
+                return
+            try:
+                text = target.read_text(errors="replace")
+            except OSError:
+                self.send_json(404, {"error": "Cannot show that file"})
+                return
+            self.send_json(200, {"text": text[:8000]})
+            return
+        rel = "index.html" if parsed.path in ("/", "") else parsed.path.lstrip("/")
+        target = (ROOT / rel).resolve()
+        if ROOT not in target.parents and target != ROOT or not target.is_file():
+            self.send_error(404)
+            return
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", TYPES.get(target.suffix, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        try:
+            body = self.read_json()
+        except (RuntimeError, json.JSONDecodeError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        try:
+            if parsed.path == "/api/launch":
+                kind = body.get("kind")
+                if kind in ("moonlight", "desktop"):
+                    app = "Desktop" if kind == "desktop" else str(body.get("app") or "Steam")
+                    width, height = (1280, 720) if body.get("resolution") == "720p" else (1920, 1080)
+                    fps = 30 if int(body.get("fps") or 60) <= 30 else 60
+                    bitrate = max(2000, min(80000, int(body.get("bitrate") or 20000)))
+                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate)
+                elif kind == "browser":
+                    url = str(body.get("url") or "https://www.google.com")
+                    if not url.startswith(("http://", "https://")):
+                        raise RuntimeError("Only web addresses can be opened")
+                    browser(url)
+                elif kind == "gamepass":
+                    browser("https://www.xbox.com/play")
+                elif kind == "retropie":
+                    retropie()
+                else:
+                    raise RuntimeError("Unknown app")
+            elif parsed.path == "/api/power":
+                action = body.get("action")
+                if action == "sleep":
+                    binary = which(("wlopm",))
+                    if binary:
+                        spawn([binary, "--off", "*"])
+                    else:
+                        raise RuntimeError("Sleep is not available")
+                elif action == "restart":
+                    spawn(["sudo", "systemctl", "reboot"])
+                elif action == "shutdown":
+                    spawn(["sudo", "systemctl", "poweroff"])
+                else:
+                    raise RuntimeError("Unknown power action")
+            elif parsed.path == "/api/volume":
+                level = max(0, min(100, int(body.get("volume", 70))))
+                pactl = which(("wpctl", "pactl"))
+                if pactl and os.path.basename(pactl) == "wpctl":
+                    spawn([pactl, "set-volume", "@DEFAULT_AUDIO_SINK@", f"{level / 100:.2f}"])
+                elif pactl:
+                    spawn([pactl, "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"])
+            elif parsed.path == "/api/system":
+                if body.get("hostname"):
+                    name = str(body["hostname"])
+                    if not HOST_RE.match(name):
+                        raise RuntimeError("Hostname is not allowed")
+                    spawn(["sudo", "hostnamectl", "set-hostname", name])
+                if body.get("country"):
+                    spawn(["sudo", "raspi-config", "nonint", "do_wifi_country", str(body["country"])[:2].upper()])
+                if "ssh" in body:
+                    spawn(["sudo", "raspi-config", "nonint", "do_ssh", "0" if body["ssh"] else "1"])
+                if body.get("timezone"):
+                    spawn(["sudo", "timedatectl", "set-timezone", str(body["timezone"])])
+            else:
+                self.send_error(404)
+                return
+        except (RuntimeError, ValueError, OSError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self.send_json(200, {"ok": True})
+
+
+def main():
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
