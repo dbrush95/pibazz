@@ -65,6 +65,13 @@ const state = {
   apps: ["Steam", "Desktop"],
   wallpapers: [],
   termLog: "bazzpi terminal\nCommands run on this Pi.\n",
+  osk: false,
+  oskMode: "abc",
+  oskShift: false,
+  oskTarget: null,
+  pad: false,
+  padReady: false,
+  padButtons: [],
 };
 
 function load(key, fallback) {
@@ -156,6 +163,7 @@ function draw() {
         }).join("")}
       </div>
       ${ICONS.wifi}
+      <button type="button" class="clockbtn" data-keyboard>Keys</button>
       <button type="button" class="clockbtn" data-exit>Exit</button>
       <button type="button" class="clockbtn ${state.tray ? "on" : ""}" data-clock>${state.clock || "—"}</button>
     </nav>`;
@@ -481,19 +489,25 @@ function settingsBody() {
 function gateCreate() {
   return `<form class="gate" data-create>
     <p class="kicker">First boot</p><h1 class="h1">Create a profile</h1>
-    <p class="sub">This card starts here once. The name shows on RetroPie and Game Pass.</p>
+    <p class="sub">This card starts here once. The name shows on RetroArch and Game Pass. A controller works. Press X for the keyboard.</p>
     <label class="lbl">Name</label><input class="field" name="name" autofocus />
     <label class="lbl">Code, optional</label><input class="field" name="pin" inputmode="numeric" maxlength="4" placeholder="4 digits" />
-    <button type="submit" class="btn primary">Create profile</button>
+    <div class="row">
+      <button type="submit" class="btn primary">Create profile</button>
+      <button type="button" class="btn" data-keyboard>Keyboard</button>
+    </div>
   </form>`;
 }
 
 function gateLock() {
   return `<form class="gate" data-unlock>
     <p class="kicker">Welcome back</p><h1 class="h1">${escapeHtml(state.profile.name)}</h1>
-    <p class="sub">Enter the 4 digit code for this profile.</p>
+    <p class="sub">Enter the 4 digit code for this profile. Press X for the keyboard.</p>
     <input class="field" name="pin" inputmode="numeric" maxlength="4" aria-label="Code" />
-    <button type="submit" class="btn primary">Unlock</button>
+    <div class="row">
+      <button type="submit" class="btn primary">Unlock</button>
+      <button type="button" class="btn" data-keyboard>Keyboard</button>
+    </div>
   </form>`;
 }
 
@@ -504,6 +518,8 @@ function bind() {
   desk.querySelector("[data-exit]")?.addEventListener("click", () => {
     api("/api/exit", {}).catch((error) => toast(error.message));
   });
+  desk.querySelector("[data-keyboard]")?.addEventListener("click", () => toggleOsk());
+  if (state.osk) renderOsk();
   desk.querySelectorAll("[data-app]").forEach((node) => node.addEventListener("click", () => launch(node.dataset.app)));
   desk.querySelectorAll("[data-focus]").forEach((node) => node.addEventListener("mousedown", (event) => {
     if (event.target.closest("button, input, select, textarea, label")) return;
@@ -677,6 +693,220 @@ fetch("/api/status").then((response) => response.json()).then((data) => {
   state.status = data;
   if (data.update === "updated") toast("Shelf updated");
 }).catch(() => {});
+
+function textField(el) {
+  return !!el && el.matches && el.matches("input, textarea") && !el.matches("[type=range], [type=checkbox], [type=file], [type=button], [type=submit]");
+}
+
+function toggleOsk() {
+  if (state.osk) {
+    setOsk(false);
+    return;
+  }
+  const active = document.activeElement;
+  state.oskTarget = textField(active) ? active : document.querySelector("input, textarea");
+  setOsk(true);
+}
+
+function setOsk(open) {
+  state.osk = open;
+  if (!open) {
+    document.querySelector(".osk")?.remove();
+    return;
+  }
+  renderOsk();
+}
+
+function oskHtml() {
+  const rows = state.oskMode === "123" ? ["1234567890", "-/:@()$&", ".,?!'"] : ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+  const show = (ch) => (state.oskShift && state.oskMode === "abc" ? ch.toUpperCase() : ch);
+  const keys = rows.map((row, index) => {
+    const letters = [...row].map((ch) => `<button type="button" class="oskkey" data-key="${ch}">${show(ch)}</button>`).join("");
+    const body = index === 2
+      ? `<button type="button" class="oskkey wide" data-key="shift">${state.oskShift ? "ABC" : "Shift"}</button>${letters}<button type="button" class="oskkey wide" data-key="back">Delete</button>`
+      : letters;
+    return `<div class="oskrow">${body}</div>`;
+  }).join("");
+  return `<div class="osk" role="group" aria-label="Keyboard">${keys}
+    <div class="oskrow">
+      <button type="button" class="oskkey wide" data-key="mode">${state.oskMode === "abc" ? "123" : "ABC"}</button>
+      <button type="button" class="oskkey wide" data-key="space">Space</button>
+      <button type="button" class="oskkey wide" data-key="done">Done</button>
+    </div>
+  </div>`;
+}
+
+function renderOsk() {
+  const html = oskHtml();
+  const existing = document.querySelector(".osk");
+  if (existing) existing.outerHTML = html;
+  else document.getElementById("desk").insertAdjacentHTML("beforeend", html);
+  document.querySelectorAll(".osk [data-key]").forEach((node) => node.addEventListener("click", () => pressKey(node.dataset.key)));
+}
+
+function pressKey(key) {
+  if (key === "shift") {
+    state.oskShift = !state.oskShift;
+    renderOsk();
+    return;
+  }
+  if (key === "mode") {
+    state.oskMode = state.oskMode === "abc" ? "123" : "abc";
+    state.oskShift = false;
+    renderOsk();
+    return;
+  }
+  if (key === "done") {
+    const target = state.oskTarget;
+    setOsk(false);
+    target?.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
+  typeInto(key === "space" ? " " : key);
+}
+
+function typeInto(key) {
+  const el = state.oskTarget;
+  if (!textField(el) || !document.contains(el)) return;
+  const value = el.value || "";
+  const start = el.selectionStart ?? value.length;
+  const end = el.selectionEnd ?? start;
+  let text = key === "back" ? "" : key;
+  if (text && state.oskShift && state.oskMode === "abc" && text.length === 1) text = text.toUpperCase();
+  if (key === "back") {
+    const from = start === end ? Math.max(0, start - 1) : start;
+    el.value = value.slice(0, from) + value.slice(end);
+    el.selectionStart = el.selectionEnd = from;
+  } else {
+    el.value = value.slice(0, start) + text + value.slice(end);
+    const next = start + text.length;
+    el.selectionStart = el.selectionEnd = next;
+  }
+  if (state.oskShift && key !== "back") {
+    state.oskShift = false;
+    renderOsk();
+  }
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function gpItems() {
+  return [...document.querySelectorAll("#desk button, #desk input, #desk select, #desk textarea")].filter((el) => {
+    const box = el.getBoundingClientRect();
+    return box.width > 2 && box.height > 2 && !el.disabled;
+  });
+}
+
+function setGp(el) {
+  document.querySelectorAll(".gpfocus").forEach((node) => node.classList.remove("gpfocus"));
+  if (!el) return;
+  el.classList.add("gpfocus");
+  el.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function moveGp(dx, dy) {
+  const current = document.querySelector(".gpfocus");
+  if (current?.matches("input[type=range]") && dx) {
+    const step = Number(current.step) || 1;
+    const next = Math.min(Number(current.max || 100), Math.max(Number(current.min || 0), Number(current.value) + dx * step));
+    current.value = String(next);
+    current.dispatchEvent(new Event("input", { bubbles: true }));
+    current.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
+  const items = gpItems();
+  if (!items.length) return;
+  const from = items.includes(current) ? current : items[0];
+  if (!current) {
+    setGp(from);
+    return;
+  }
+  const box = from.getBoundingClientRect();
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  let best = null;
+  let score = Infinity;
+  for (const el of items) {
+    if (el === from) continue;
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2 - cx;
+    const y = rect.top + rect.height / 2 - cy;
+    if (dx && (Math.sign(x) !== dx || Math.abs(x) < 10)) continue;
+    if (dy && (Math.sign(y) !== dy || Math.abs(y) < 10)) continue;
+    const primary = dx ? Math.abs(x) : Math.abs(y);
+    const secondary = dx ? Math.abs(y) : Math.abs(x);
+    const next = primary + secondary * 3;
+    if (next < score) {
+      score = next;
+      best = el;
+    }
+  }
+  if (best) setGp(best);
+}
+
+function activateGp() {
+  const el = document.querySelector(".gpfocus") || gpItems()[0];
+  if (!el) return;
+  setGp(el);
+  if (textField(el)) {
+    el.focus();
+    state.oskTarget = el;
+    setOsk(true);
+    const key = document.querySelector(".osk [data-key]");
+    if (key) setGp(key);
+    return;
+  }
+  el.click();
+}
+
+function backGp() {
+  if (state.osk) {
+    setOsk(false);
+    return;
+  }
+  const win = document.querySelector(".gpfocus")?.closest(".window");
+  win?.querySelector("[data-close]")?.click();
+}
+
+const gpHeld = { dir: "", next: 0 };
+function pollPad() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pad = [...pads].find(Boolean);
+  if (pad) {
+    state.pad = true;
+    if (!state.padReady) {
+      state.padButtons = pad.buttons.map((button) => button.pressed);
+      state.padReady = true;
+    } else {
+      const now = performance.now();
+      const dirs = [
+        ["left", pad.axes[0] < -0.45 || pad.buttons[14]?.pressed, -1, 0],
+        ["right", pad.axes[0] > 0.45 || pad.buttons[15]?.pressed, 1, 0],
+        ["up", pad.axes[1] < -0.45 || pad.buttons[12]?.pressed, 0, -1],
+        ["down", pad.axes[1] > 0.45 || pad.buttons[13]?.pressed, 0, 1],
+      ];
+      const dir = dirs.find((item) => item[1]);
+      if (!dir) gpHeld.dir = "";
+      else if (gpHeld.dir !== dir[0] || now >= gpHeld.next) {
+        moveGp(dir[2], dir[3]);
+        gpHeld.next = now + (gpHeld.dir === dir[0] ? 150 : 340);
+        gpHeld.dir = dir[0];
+      }
+      pad.buttons.forEach((button, index) => {
+        const down = button.pressed;
+        if (down && !state.padButtons[index]) {
+          if (index === 0) activateGp();
+          if (index === 1) backGp();
+          if (index === 2) toggleOsk();
+          if (index === 9) document.querySelector("[data-grid]")?.click();
+        }
+        state.padButtons[index] = down;
+      });
+    }
+  }
+  requestAnimationFrame(pollPad);
+}
+
 draw();
 tick();
 setInterval(tick, 10000);
+requestAnimationFrame(pollPad);

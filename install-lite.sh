@@ -121,4 +121,11 @@ if [ ! -f "$HOME_DIR/.config/labwc/rc.xml" ]; then
 EOF
 fi
 
+sudo tee /etc/udev/rules.d/80-bazzpi-controller.rules >/dev/null << 'EOF'
+SUBSYSTEM=="input", KERNEL=="js[0-9]*", MODE="0660", GROUP="input"
+SUBSYSTEM=="input", KERNEL=="event[0-9]*", MODE="0660", GROUP="input"
+EOF
+sudo udevadm control --reload-rules || true
+sudo udevadm trigger || true
+
 echo "Reboot. The Pi logs in by itself and opens the shelf. The first screen is still the profile."

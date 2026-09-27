@@ -49,4 +49,5 @@ rm -f "$HOME_DIR/.config/autostart/bazzpi-moonlight.desktop"
 sudo rm -f /etc/xdg/autostart/bazzpi-moonlight.desktop
 pkill -f moonlight-qt || true
 
+sudo usermod -aG input "$USER_NAME" || true
 echo "Shelf installed. Log out and back in, or reboot. The shelf replaces the plain desktop."
