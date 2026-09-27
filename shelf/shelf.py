@@ -19,6 +19,24 @@ APP_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
 PIN_RE = re.compile(r"\b(\d{4})\b")
 PAIR = {}
 PAIR_LOCK = threading.Lock()
+SYSTEMS = {
+    "nes", "snes", "gb", "gbc", "gba", "mastersystem", "megadrive", "gamegear",
+    "segacd", "pcengine", "neogeo", "fbneo", "psx", "n64", "dreamcast", "psp", "nds",
+}
+CORE_HINTS = {
+    "nes": "nestopia", "snes": "snes9x", "gb": "gambatte", "gbc": "gambatte",
+    "gba": "mgba", "mastersystem": "genesis_plus_gx", "megadrive": "genesis_plus_gx",
+    "gamegear": "genesis_plus_gx", "segacd": "genesis_plus_gx", "pcengine": "pce",
+    "neogeo": "fbneo", "fbneo": "fbneo", "psx": "pcsx_rearmed", "n64": "mupen64plus",
+    "dreamcast": "flycast", "psp": "ppsspp", "nds": "melonds",
+}
+ROM_HINTS = {
+    ".nes": "nestopia", ".sfc": "snes9x", ".smc": "snes9x", ".gb": "gambatte",
+    ".gbc": "gambatte", ".gba": "mgba", ".md": "genesis_plus_gx", ".gen": "genesis_plus_gx",
+    ".sms": "genesis_plus_gx", ".gg": "genesis_plus_gx", ".pce": "pce",
+    ".n64": "mupen64plus", ".z64": "mupen64plus", ".v64": "mupen64plus",
+    ".nds": "melonds", ".cdi": "flycast", ".gdi": "flycast",
+}
 TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -59,7 +77,7 @@ def browser(url):
     if not binary:
         raise RuntimeError("Chromium is not installed")
     profile = HOME / ".config" / "bazzpi-browser"
-    spawn([binary, f"--user-data-dir={profile}", "--new-window", url])
+    spawn([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--new-window", url])
 
 
 def moonlight_bin():
@@ -203,10 +221,44 @@ def install_launcher():
 
 
 def terminal():
-    binary = which(("lxterminal", "x-terminal-emulator", "foot", "kitty", "gnome-terminal", "konsole", "xterm"))
+    binary = which(("foot", "lxterminal", "x-terminal-emulator", "kitty", "gnome-terminal", "konsole", "xterm"))
     if not binary:
         raise RuntimeError("No terminal program is installed")
     spawn([binary])
+
+
+def find_core(hint):
+    if not hint:
+        return None
+    for path in Path("/usr/lib").glob("**/libretro/*.so"):
+        if hint in path.name:
+            return path
+    return None
+
+
+def retroarch(system="", rom=""):
+    if system and system not in SYSTEMS:
+        raise RuntimeError("That system is not on this Pi")
+    binary = which(("retroarch", "emulationstation"))
+    if not binary:
+        raise RuntimeError("RetroArch is not installed")
+    if binary.endswith("emulationstation") and not rom:
+        spawn([binary])
+        return
+    folder = HOME / "ROMs" / system if system else HOME / "ROMs"
+    folder.mkdir(parents=True, exist_ok=True)
+    command = [binary, "--fullscreen"]
+    target = safe_path(rom) if rom else None
+    if target is not None:
+        if not target.is_file():
+            raise RuntimeError("That game is not in the home folder")
+        hint = CORE_HINTS.get(system) or CORE_HINTS.get(target.parent.name) or ROM_HINTS.get(target.suffix.lower(), "")
+        core = find_core(hint)
+        if core:
+            command += ["-L", str(core), str(target)]
+        else:
+            command.append(str(target))
+    spawn(command)
 
 
 def wallpaper_roots():
@@ -269,10 +321,7 @@ def run_shell(command):
 
 
 def retropie():
-    binary = which(("emulationstation", "retroarch"))
-    if not binary:
-        raise RuntimeError("RetroPie is not installed. Run the RetroPie setup from the shelf first.")
-    spawn([binary])
+    retroarch()
 
 
 def safe_path(rel):
@@ -420,7 +469,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif kind == "gamepass":
                     browser("https://www.xbox.com/play")
                 elif kind == "retropie":
-                    retropie()
+                    retroarch(str(body.get("system") or ""))
+                elif kind == "rom":
+                    retroarch(rom=str(body.get("path") or ""))
                 elif kind == "terminal":
                     terminal()
                 else:

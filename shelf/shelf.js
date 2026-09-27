@@ -1,7 +1,7 @@
 const APPS = [
   ["play", "Play"],
   ["desktop", "Desktop"],
-  ["retropie", "RetroPie"],
+  ["retropie", "RetroArch"],
   ["gamepass", "Game Pass"],
   ["browser", "Browser"],
   ["files", "Files"],
@@ -344,16 +344,17 @@ async function refreshApps() {
 
 function retroBody() {
   const list = CONSOLES.filter((item) => state.pace === "All" || item[2] === state.pace);
-  return `<h1 class="h1">RetroPie</h1>
+  const picked = CONSOLES.find((item) => item[0] === state.picked);
+  return `<h1 class="h1">RetroArch</h1>
     <p class="sub">${escapeHtml(state.profile.name)}, these systems run on the Pi. PlayStation 2, GameCube, Wii, and Switch do not.</p>
     <div class="row">
       ${["All", "Full speed", "Hit or miss"].map((item) => `<button type="button" class="btn ${state.pace === item ? "primary" : ""}" data-pace="${item}">${item}</button>`).join("")}
-      <button type="button" class="btn primary" data-stream="retropie">Open RetroPie</button>
+      <button type="button" class="btn primary" data-stream="retropie">Open RetroArch</button>
     </div>
     <div class="cards">
-      ${list.map((item) => `<button type="button" class="card" data-console="${item[0]}"><b>${item[0]}</b><span>${item[2]}</span></button>`).join("")}
+      ${list.map((item) => `<button type="button" class="card ${state.picked === item[0] ? "on" : ""}" data-console="${item[0]}"><b>${item[0]}</b><span>${item[2]}</span></button>`).join("")}
     </div>
-    ${state.picked ? `<div class="preview">${escapeHtml(state.picked)}\nFolder ~/RetroPie/roms/${escapeHtml((CONSOLES.find((item) => item[0] === state.picked) || ["", ""])[1])}\nNo games are included. Put your own files in that folder.</div>` : ""}`;
+    ${picked ? `<div class="preview">${escapeHtml(picked[0])}\nPut games in ~/ROMs/${escapeHtml(picked[1])}\nThen open RetroArch, or click the game in Files.</div>` : `<p class="fine">Games go in ~/ROMs. Click a game in Files and it opens here.</p>`}`;
 }
 
 function gameBody() {
@@ -472,7 +473,7 @@ function settingsBody() {
       <label class="lbl">Timezone</label><input class="field" data-timezone value="${escapeHtml(s.timezone)}" />
       <label class="check"><input type="checkbox" data-ssh ${s.ssh ? "checked" : ""} /> SSH</label>
       <button type="button" class="btn primary" data-apply>Apply</button>
-      <p class="fine">${state.status.moonlight ? "Moonlight is installed." : "Moonlight is still installing. Leave the Pi online."} ${state.status.retropie ? "RetroPie is installed." : "RetroPie is not installed yet."} ${updateLine(state.status.update)}</p>`;
+      <p class="fine">${state.status.moonlight ? "Moonlight is installed." : "Moonlight is not installed yet."} ${state.status.retropie ? "RetroArch is installed." : "RetroArch is not installed yet."} ${updateLine(state.status.update)}</p>`;
   }
   return `<div class="settings"><div class="snav">${nav}</div><div>${pane}</div></div>`;
 }
@@ -582,8 +583,9 @@ async function stream(kind) {
       kind: kind === "moonlight-gui" ? "moonlight" : kind,
       host: kind === "moonlight-gui" ? "" : s.host,
       app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, url,
+      system: (CONSOLES.find((item) => item[0] === state.picked) || [])[1] || "",
     });
-    toast(kind === "retropie" ? "Opening RetroPie" : "Opening");
+    toast(kind === "retropie" ? "Opening RetroArch" : "Opening");
   } catch (error) {
     toast(error.message);
   }
@@ -622,7 +624,7 @@ async function loadFiles() {
   try {
     const data = await api(`/api/files?path=${encodeURIComponent(state.filePath)}`);
     const crumbs = state.filePath ? state.filePath.split("/") : [];
-    box.innerHTML = `<h1 class="h1">Files</h1><p class="sub">The home folder on this Pi.</p>
+    box.innerHTML = `<h1 class="h1">Files</h1><p class="sub">The home folder on this Pi. A game file opens in RetroArch.</p>
       <div class="crumbs"><button type="button" class="btn" data-up="">Home</button>${crumbs.map((part, index) => `<button type="button" class="btn" data-up="${escapeHtml(crumbs.slice(0, index + 1).join("/"))}">${escapeHtml(part)}</button>`).join("")}</div>
       <div class="filelist">
         ${data.entries.map((entry) => `<button type="button" class="file" data-entry="${escapeHtml(entry.name)}" data-kind="${entry.kind}">${entry.kind === "dir" ? "Folder" : "File"} · ${escapeHtml(entry.name)}</button>`).join("") || "<p class='sub'>This folder is empty.</p>"}
@@ -635,6 +637,9 @@ async function loadFiles() {
         state.filePath = next;
         state.fileText = "";
         loadFiles();
+      } else if (/\.(nes|sfc|smc|gb|gbc|gba|md|gen|sms|gg|cue|chd|pce|zip|n64|z64|v64|nds|cdi|gdi|32x|iso|bin)$/i.test(node.dataset.entry)) {
+        await api("/api/launch", { kind: "rom", path: next });
+        toast("Opening in RetroArch");
       } else {
         const file = await api(`/api/file?path=${encodeURIComponent(next)}`);
         state.fileText = file.text || "";

@@ -14,6 +14,14 @@ curl -fsSL https://raw.githubusercontent.com/dbrush95/pibazz/main/install.sh | b
 
 Then log out and back in, or reboot.
 
+Raspberry Pi OS Lite does not have a desktop. Flash Lite, turn on SSH in Imager, then from that Pi run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dbrush95/pibazz/main/install-lite.sh | bash
+```
+
+Reboot. Linux logs in on its own. The shelf still asks you to make a profile. Play opens Moonlight, Desktop opens the PC, RetroArch plays files in `~/ROMs`, and the browser, files, and terminal are the real programs.
+
 - Play and Desktop open Moonlight
 - Browser, Files, and Game Pass open the real programs
 - Settings changes light and dark, the wallpaper, and the Pi options
