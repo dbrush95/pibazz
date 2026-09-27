@@ -27,3 +27,15 @@ Reboot. Linux logs in on its own. The shelf still asks you to make a profile. Pl
 - Settings changes light and dark, the wallpaper, and the Pi options
 - Quit a stream with Ctrl+Alt+Shift+Q
 - SHA256 of the card: `c8d9ceefaaa66b6b4f65e4ce911b017b7400c35e2422d52bb1d70cf900c9c83a`
+
+## Shelf
+
+![Profile](screenshots/01-profile.png)
+![Shelf](screenshots/02-shelf.png)
+![Moonlight](screenshots/03-moonlight.png)
+![RetroArch](screenshots/04-retroarch.png)
+![Settings](screenshots/05-settings.png)
+![Dark](screenshots/06-dark.png)
+![Files](screenshots/07-files.png)
+![Lock](screenshots/08-lock.png)
+
