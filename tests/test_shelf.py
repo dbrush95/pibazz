@@ -44,6 +44,32 @@ class MoonlightTests(unittest.TestCase):
             self.assertEqual(popen.call_args.args[0][-2:], ['--pin', result['pin']])
             tuck.assert_not_called()
 
+    def test_compatibility_uses_smaller_packets(self):
+        with patch.object(shelf, 'moonlight_bin', return_value='moonlight-qt'), patch.object(shelf, 'run_in_front') as run:
+            shelf.moonlight('pc.local', 'Desktop', 1280,720,30,5000,'H.264',compatibility=True)
+            args = run.call_args.args[0]
+            self.assertEqual(args[args.index('--packet-size')+1], '1024')
+            self.assertIn('--no-hdr', args)
+
+class SystemSettingsTests(unittest.TestCase):
+    def test_invalid_values_rejected_before_mutation(self):
+        for body in ({'hostname':'bad name'}, {'country':'USA'}, {'timezone':'../../etc/passwd'}, {'ssh':'yes'}, {'hostname':'good','country':'$x'}):
+            with patch.object(shelf, 'checked_command') as command:
+                with self.assertRaises(RuntimeError): shelf.apply_system(body)
+                command.assert_not_called()
+
+    def test_failed_command_is_not_reported_as_saved(self):
+        with patch.object(shelf, 'checked_command', side_effect=RuntimeError('permission denied')):
+            with self.assertRaisesRegex(RuntimeError, 'Could not apply hostname'):
+                shelf.apply_system({'hostname':'kids-pi'})
+
+    def test_explicit_ssh_boolean_maps_to_raspi_config(self):
+        with patch.object(shelf, 'checked_command') as command:
+            result=shelf.apply_system({'ssh':False})
+            self.assertEqual(command.call_args.args[0], ['sudo','-n','raspi-config','nonint','do_ssh','1'])
+            self.assertEqual(result['applied'], ['ssh'])
+
+
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

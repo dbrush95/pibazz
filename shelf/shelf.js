@@ -59,6 +59,10 @@ const state = {
   diagnostics: null,
   native: { status: "idle" },
   token: "",
+  pi: null,
+  piLoading: false,
+  piError: "",
+  panels: {},
   clock: "",
   filePath: "",
   fileText: "",
@@ -77,6 +81,8 @@ const state = {
   pad: false,
   padReady: false,
   padButtons: [],
+  padMode: "cursor",
+  oskSelector: "",
 };
 
 function load(key, fallback) {
@@ -141,6 +147,11 @@ function el(html) {
 }
 
 function draw() {
+  if (state.oskTarget && document.contains?.(state.oskTarget)) {
+    state.oskSelector = fieldSelector(state.oskTarget);
+    state.oskValue = state.oskTarget.value;
+    state.oskPosition = state.oskTarget.selectionStart;
+  }
   const desk = document.getElementById("desk");
   const theme = state.settings.theme === "dark" ? "dark" : "";
   desk.className = `desk ${theme} desk-${state.settings.desktop}`;
@@ -238,55 +249,31 @@ function bodyFor(id) {
 
 function playBody(desktop) {
   const s = state.settings;
-  const host = s.host || "the-pc";
-  const apps = state.apps.length ? state.apps : ["Steam", "Desktop"];
-  if (desktop) {
-    return `<h1 class="h1">Desktop</h1>
-      <p class="sub">Opens the Bazzite desktop through the Moonlight pairing. Set the host up in Play first.</p>
-      <p class="fine">${s.paired ? "Paired" : "Not paired yet"} · ${escapeHtml(s.host || "No address")} · ${escapeHtml(s.resolution)} ${s.fps} fps</p>
-      <button type="button" class="btn primary" data-stream="desktop">Open the PC</button>
-      <p class="fine">If the picture is blank, on the Bazzite PC open the Steam power menu and choose Switch to Desktop. Quit with Ctrl+Alt+Shift+Q.</p>`;
-  }
-  return `<h1 class="h1">Moonlight</h1>
-    <p class="sub">Pair this Pi with Sunshine on the Bazzite PC. You only do this once.</p>
-    <h2 class="h2">1. Sunshine host</h2>
-    <label class="lbl">PC address</label>
-    <input class="field" data-host value="${escapeHtml(s.host)}" placeholder="192.168.1.20" />
-    <p class="fine">The PC and the Pi have to be on the same network. On the PC, Sunshine’s page is https://${escapeHtml(host)}:47990. The browser warning about the certificate is normal.</p>
-    <div class="row"><button type="button" class="btn" data-diagnose>Test connection</button></div>
-    <div class="diagnostics">${diagnosticHtml()}</div>
-    <h2 class="h2">2. Pair</h2>
-    <ol class="steps">
-      <li>Sunshine must be running in the PC session you want to capture.</li>
-      <li>Press Get a PIN. Keep this screen open while entering the code on your PC.</li>
-      <li>On the PC, open https://${escapeHtml(host)}:47990, sign in, and open the PIN tab.</li>
-      <li>Type the 4 digits, name the device bazzpi, and press Send.</li>
-    </ol>
-    <p class="pin" data-pin>${escapeHtml(state.pair.pin || "····")}</p>
-    <p class="fine" data-pair-status>${escapeHtml(pairLabel(state.pair, s.paired))}</p>
-    <div class="row">
-      <button type="button" class="btn primary" data-pair>Get a PIN</button>
-      <button type="button" class="btn" data-moonlight>Open Moonlight</button>
+  if (desktop) return `<div class="page-head"><p class="kicker">Your PC, here</p><h1 class="h1">Desktop</h1><p class="sub">${escapeHtml(s.host || "Set up your PC in Play first.")}</p></div><button class="btn primary" data-stream="desktop">Open desktop</button><p class="fine">Close the stream with Ctrl + Alt + Shift + Q.</p>`;
+  return `<div class="play-layout">
+    <div class="play-main">
+      <div class="page-head"><p class="kicker">Local streaming</p><h1 class="h1">Ready to play?</h1><p class="sub">${escapeHtml(s.host || "Connect your Bazzite PC to get started.")}</p></div>
+      <div class="stream-summary"><span>${escapeHtml(s.resolution)} · ${s.fps} fps</span><span>${Math.round(s.bitrate/1000)} Mb/s · H.264</span></div>
+      <div class="cards app-cards">${state.apps.map(name => `<button class="card ${s.app === name ? "on" : ""}" data-pick="${escapeHtml(name)}"><span class="glyph">${name === "Desktop" ? ICONS.desktop : ICONS.play}</span><b>${escapeHtml(name)}</b></button>`).join("")}</div>
+      <div class="row"><button class="btn primary play-now" data-stream="moonlight">Play ${escapeHtml(s.app || "Steam")}</button><button class="btn" data-apps>Refresh games</button></div>
+      <p class="fine">Ctrl + Alt + Shift + Q ends the stream.</p>
+      <details data-panel="picture"><summary>Picture & performance</summary>
+        <div class="form-grid"><label>Resolution<select class="select" data-res><option ${s.resolution === "1080p" ? "selected" : ""}>1080p</option><option ${s.resolution === "720p" ? "selected" : ""}>720p</option></select></label>
+        <label>Frame rate<select class="select" data-fps><option value="60" ${Number(s.fps) === 60 ? "selected" : ""}>60 fps</option><option value="30" ${Number(s.fps) === 30 ? "selected" : ""}>30 fps</option></select></label></div>
+        <label class="lbl">Bitrate · ${Math.round(s.bitrate/1000)} Mb/s</label><input class="slider" type="range" min="5000" max="40000" step="1000" value="${s.bitrate}" data-bitrate />
+        <label class="lbl">Decoder</label><select class="select" data-decoder>${["auto","hardware","software"].map(v => `<option value="${v}" ${s.decoder === v ? "selected" : ""}>${{auto:"Automatic (recommended)",hardware:"Hardware only",software:"Software (test only)"}[v]}</option>`).join("")}</select>
+        <p class="fine">Keep the Pi display at 1080p. Automatic decoding does not guarantee hardware acceleration.</p>
+      </details>
     </div>
-    <h2 class="h2">3. What to stream</h2>
-    <div class="row">
-      <button type="button" class="btn" data-apps>Refresh apps from the PC</button>
-    </div>
-    <div class="cards">
-      ${apps.map((name) => `<button type="button" class="card ${s.app === name ? "on" : ""}" data-pick="${escapeHtml(name)}"><b>${escapeHtml(name)}</b><span>${name === "Desktop" ? "The whole PC" : "On the PC"}</span></button>`).join("")}
-    </div>
-    <p class="fine">These are the apps configured in Sunshine. Launching Steam does not switch Bazzite between Desktop and Game Mode.</p>
-    <h2 class="h2">4. Picture</h2>
-    <label class="lbl">Resolution</label>
-    <select class="select" data-res><option ${s.resolution === "1080p" ? "selected" : ""}>1080p</option><option ${s.resolution === "720p" ? "selected" : ""}>720p</option></select>
-    <label class="lbl">Frame rate</label>
-    <select class="select" data-fps><option ${Number(s.fps) === 60 ? "selected" : ""} value="60">60</option><option ${Number(s.fps) === 30 ? "selected" : ""} value="30">30</option></select>
-    <label class="lbl">Bitrate ${Math.round(s.bitrate / 1000)} Mb/s</label>
-    <input class="slider" type="range" min="5000" max="40000" step="1000" value="${s.bitrate}" data-bitrate />
-    <p class="fine">H.264 · 1080p60 · 20 Mb/s is the starting preset. Keep TV output at 1080p too. Automatic decoding avoids blocking launch when hardware decoding is unavailable; check the Moonlight statistics for actual performance.</p>
-    <label class="lbl">Video decoder</label><select class="select" data-decoder>${["auto", "hardware", "software"].map(v => `<option value="${v}" ${s.decoder === v ? "selected" : ""}>${{auto:"Automatic (recommended)",hardware:"Hardware only",software:"Software (diagnostic)"}[v]}</option>`).join("")}</select>
-    <p class="fine">Close an app to return home. Super + H shows the shelf; Alt + Tab returns to an open app. End a stream with Ctrl + Alt + Shift + Q.</p>
-    <button type="button" class="btn primary" data-stream="moonlight">Play ${escapeHtml(s.app || "Steam")}</button>`;
+    <aside class="connection-panel">
+      <h2 class="h2">Your connection</h2><label class="lbl">PC address</label><input class="field" data-host value="${escapeHtml(s.host)}" placeholder="192.168.1.20" aria-label="PC address" />
+      <button class="btn" data-diagnose>Test connection</button><div class="diagnostics">${diagnosticHtml()}</div>
+      <details data-panel="pair" ${!s.paired ? "open" : ""}><summary>Pair this Pi</summary><p class="fine">Get a PIN, then enter it in Sunshine’s PIN page on your PC at https://localhost:47990.</p>
+        <p class="pin" data-pin>${escapeHtml(state.pair.pin || "····")}</p><p class="fine" data-pair-status>${escapeHtml(pairLabel(state.pair,s.paired))}</p><button class="btn" data-pair>Get a PIN</button>
+      </details>
+      <details data-panel="trouble"><summary>No video / firewall error?</summary><p class="fine">This message means Moonlight received no video. It does not identify the cause. TCP checks cannot verify UDP video.</p><button class="btn" data-compatibility>Try compatibility stream</button><p class="fine">One attempt at 720p30, 5 Mb/s, H.264 and 1024-byte packets. Your normal settings stay saved.</p><button class="btn" data-moonlight>Open Moonlight</button><p class="fine">If it still fails, check Sunshine’s capture/encoder log and test another Moonlight client on the same LAN.</p></details>
+    </aside>
+  </div>`;
 }
 
 function diagnosticHtml() {
@@ -514,13 +501,19 @@ function settingsBody() {
       <label class="lbl">Bitrate ${s.bitrate}</label>
       <input class="slider" type="range" min="2000" max="40000" step="1000" value="${s.bitrate}" data-bitrate />`;
   } else {
-    pane = `<h1 class="h1">Pi</h1><p class="sub">These change the machine, the same jobs as raspi-config.</p>
-      <label class="lbl">Hostname</label><input class="field" data-hostname value="${escapeHtml(s.hostname)}" />
-      <label class="lbl">Wi-Fi country</label><input class="field" data-country value="${escapeHtml(s.country)}" maxlength="2" />
-      <label class="lbl">Timezone</label><input class="field" data-timezone value="${escapeHtml(s.timezone)}" />
-      <label class="check"><input type="checkbox" data-ssh ${s.ssh ? "checked" : ""} /> SSH</label>
-      <button type="button" class="btn primary" data-apply>Apply</button>
-      <p class="fine">${state.status.moonlight ? "Moonlight is installed." : "Moonlight is not installed yet."} ${state.status.retropie ? "RetroArch is installed." : "RetroArch is not installed yet."} ${updateLine(state.status.update)}</p>`;
+    const pi = state.pi;
+    pane = `<div class="page-head"><p class="kicker">This device</p><h1 class="h1">Raspberry Pi</h1><p class="sub">System settings read directly from your Pi.</p></div>
+      <div class="row"><button class="btn" data-refresh-pi>${state.piLoading ? "Reading…" : "Refresh settings"}</button><button class="btn" data-stream="raspi-config">Open full raspi-config</button></div>
+      <p class="fine">The full tool opens in a terminal and needs a keyboard. Finish closes it and returns here.</p>
+      ${state.piError ? `<p class="settings-error" role="alert">${escapeHtml(state.piError)}</p>` : ""}
+      ${pi ? `<div class="form-grid"><label>Hostname<input class="field" data-hostname value="${escapeHtml(pi.hostname)}" /></label><label>Wi-Fi country<input class="field" data-country value="${escapeHtml(pi.country || "")}" maxlength="2" placeholder="US" /></label></div>
+      <label class="lbl">Timezone</label><input class="field" data-timezone value="${escapeHtml(pi.timezone || "")}" placeholder="America/New_York" />
+      <label class="check"><input type="checkbox" data-ssh ${pi.ssh ? "checked" : ""} ${pi.ssh === null ? "disabled" : ""} /> Allow SSH access</label><p class="fine">Turning SSH off disables remote terminal access.</p>
+      <label class="lbl">Audio output</label><select class="select" data-audio ${!pi.sinks.length ? "disabled" : ""}>${pi.sinks.length ? pi.sinks.map(item => `<option value="${escapeHtml(item.name)}" ${pi.audio === item.name ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("") : '<option>No outputs found</option>'}</select>
+      ${!pi.sinks.length ? '<p class="fine">Rerun the Lite installer to add audio controls if needed. Check that your HDMI/audio device is connected.</p>' : ''}
+      <button class="btn primary" data-apply>Apply changes</button>
+      ${pi.errors.length ? `<details><summary>Some settings could not be read</summary><p class="fine">${escapeHtml(pi.errors.join(" · "))}</p></details>` : ""}` : '<p class="fine">Reading device settings…</p>'}
+      <p class="fine">${updateLine(state.status.update)}</p>`;
   }
   return `<div class="settings"><div class="snav">${nav}</div><div>${pane}</div></div>`;
 }
@@ -552,6 +545,12 @@ function gateLock() {
 
 function bind() {
   const desk = document.getElementById("desk");
+  desk.querySelector("[data-refresh-pi]")?.addEventListener("click", loadPi);
+  desk.querySelector("[data-compatibility]")?.addEventListener("click", () => stream("moonlight", true));
+  desk.querySelectorAll("details[data-panel]").forEach(node => {
+    if (node.dataset.panel in state.panels) node.open = state.panels[node.dataset.panel];
+    node.addEventListener("toggle", () => { state.panels[node.dataset.panel] = node.open; });
+  });
   desk.querySelector("[data-dismiss-error]")?.addEventListener("click", () => { state.native.status = "idle"; draw(); });
   desk.querySelector("[data-diagnose]")?.addEventListener("click", testConnection);
   desk.querySelectorAll("[data-max]").forEach(node => node.addEventListener("click", () => node.closest(".window").classList.toggle("maximized")));
@@ -562,7 +561,19 @@ function bind() {
     api("/api/exit", {}).catch((error) => toast(error.message));
   });
   desk.querySelector("[data-keyboard]")?.addEventListener("click", () => toggleOsk());
-  if (state.osk) renderOsk();
+  if (state.osk) {
+    const target = state.oskSelector ? desk.querySelector(state.oskSelector) : null;
+    if (target) {
+      state.oskTarget = target;
+      target.value = state.oskValue ?? target.value;
+      if (state.oskPosition != null) target.setSelectionRange?.(state.oskPosition, state.oskPosition);
+    }
+    renderOsk();
+  }
+  desk.classList.toggle("keyboard-open", state.osk);
+  desk.querySelectorAll("input,textarea").forEach(node => node.addEventListener("focus", () => {
+    if (state.pad && textField(node) && !state.osk && state.oskTarget !== node) openKeyboard(node);
+  }));
   desk.querySelectorAll("[data-app]").forEach((node) => node.addEventListener("click", () => launch(node.dataset.app)));
   desk.querySelectorAll("[data-focus]").forEach((node) => node.addEventListener("mousedown", (event) => {
     if (event.target.closest("button, input, select, textarea, label")) return;
@@ -598,7 +609,7 @@ function bind() {
     api("/api/power", { action: node.dataset.power }).catch((error) => toast(error.message));
   }));
   desk.querySelectorAll("[data-stream]").forEach((node) => node.addEventListener("click", () => stream(node.dataset.stream)));
-  desk.querySelectorAll("[data-section]").forEach((node) => node.addEventListener("click", () => { state.section = node.dataset.section; draw(); }));
+  desk.querySelectorAll("[data-section]").forEach((node) => node.addEventListener("click", () => { state.section = node.dataset.section; draw(); if (state.section === "Pi") loadPi(); }));
   desk.querySelectorAll("[data-theme]").forEach((node) => node.addEventListener("click", () => patch({ theme: node.dataset.theme })));
   desk.querySelector("[data-shell]")?.addEventListener("submit", runShell);
   desk.querySelector("[data-upload]")?.addEventListener("change", (event) => uploadWallpaper(event.target.files?.[0]));
@@ -650,7 +661,7 @@ function bind() {
   ensurePoll();
 }
 
-async function stream(kind) {
+async function stream(kind, compatibility = false) {
   const s = state.settings;
   const url = normalize(deskValue("[data-url]") || state.url);
   state.url = url;
@@ -658,7 +669,7 @@ async function stream(kind) {
     await api("/api/launch", {
       kind: kind === "moonlight-gui" ? "moonlight" : kind,
       host: kind === "moonlight-gui" ? "" : s.host,
-      app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, decoder: s.decoder, url,
+      app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, decoder: s.decoder, url, compatibility,
       system: (CONSOLES.find((item) => item[0] === state.picked) || [])[1] || "",
     });
     state.native = {status: "running"};
@@ -668,20 +679,27 @@ async function stream(kind) {
   }
 }
 
+async function loadPi() {
+  if (state.piLoading) return;
+  state.piLoading = true; state.piError = "";
+  try { state.pi = await api("/api/system"); }
+  catch(error) { state.piError = error.message; }
+  state.piLoading = false;
+  if (state.focus === "settings" && state.section === "Pi") draw();
+}
+
 async function applySystem() {
-  const next = {
-    hostname: deskValue("[data-hostname]"),
-    country: deskValue("[data-country]"),
-    timezone: deskValue("[data-timezone]"),
-    ssh: document.querySelector("[data-ssh]")?.checked || false,
-  };
-  patch(next);
+  if (!state.pi) return;
+  const values = {hostname: deskValue("[data-hostname]"), country: deskValue("[data-country]").toUpperCase(), timezone: deskValue("[data-timezone]"), audio: deskValue("[data-audio]")};
+  const ssh = document.querySelector("[data-ssh]");
+  if (ssh && !ssh.disabled) values.ssh = ssh.checked;
+  const changes = Object.fromEntries(Object.entries(values).filter(([k,v]) => v !== state.pi[k] && v !== ""));
+  if (!Object.keys(changes).length) return toast("No changes to apply");
   try {
-    await api("/api/system", next);
-    toast("Pi settings saved");
-  } catch (error) {
-    toast(error.message);
-  }
+    const result = await api("/api/system", changes);
+    await loadPi();
+    toast(result.rebootRecommended ? "Saved. Restart the Pi to finish the hostname change." : "Pi settings saved");
+  } catch(error) { state.piError = error.message; draw(); }
 }
 
 function deskValue(selector) {
@@ -789,20 +807,39 @@ function textField(el) {
   return !!el && el.matches && el.matches("input, textarea") && !el.matches("[type=range], [type=checkbox], [type=file], [type=button], [type=submit]");
 }
 
+function fieldSelector(node) {
+  for (const attr of ["name", "data-host", "data-url", "data-search", "data-hostname", "data-country", "data-timezone", "data-command"]) {
+    if (node.hasAttribute(attr)) return `[${attr}="${node.getAttribute(attr)}"]`;
+  }
+  return "";
+}
+
+function openKeyboard(target) {
+  if (!textField(target)) return;
+  state.oskTarget = target;
+  state.oskSelector = fieldSelector(target);
+  state.oskMode = target.inputMode === "numeric" ? "123" : "abc";
+  target.focus({preventScroll:true});
+  setOsk(true);
+  target.scrollIntoView({block:"nearest"});
+}
+
 function toggleOsk() {
   if (state.osk) {
     setOsk(false);
     return;
   }
   const active = document.activeElement;
-  state.oskTarget = textField(active) ? active : document.querySelector("input, textarea");
-  setOsk(true);
+  const highlighted = document.querySelector(".gpfocus");
+  openKeyboard(textField(active) ? active : textField(highlighted) ? highlighted : gpItems().find(textField));
 }
 
 function setOsk(open) {
   state.osk = open;
+  document.getElementById("desk").classList.toggle("keyboard-open", open);
   if (!open) {
     document.querySelector(".osk")?.remove();
+    state.oskTarget?.dispatchEvent(new Event("change", {bubbles:true}));
     return;
   }
   renderOsk();
@@ -818,7 +855,7 @@ function oskHtml() {
       : letters;
     return `<div class="oskrow">${body}</div>`;
   }).join("");
-  return `<div class="osk" role="group" aria-label="Keyboard">${keys}
+  return `<div class="osk" role="group" aria-label="Keyboard"><div class="osk-heading"><b>Keyboard</b><span>A Select · B Done · X Hide</span></div>${keys}
     <div class="oskrow">
       <button type="button" class="oskkey wide" data-key="mode">${state.oskMode === "abc" ? "123" : "ABC"}</button>
       <button type="button" class="oskkey wide" data-key="space">Space</button>
@@ -850,7 +887,7 @@ function pressKey(key) {
   if (key === "done") {
     const target = state.oskTarget;
     setOsk(false);
-    target?.dispatchEvent(new Event("change", { bubbles: true }));
+    target?.focus({preventScroll:true});
     return;
   }
   typeInto(key === "space" ? " " : key);
@@ -869,6 +906,8 @@ function typeInto(key) {
     el.value = value.slice(0, from) + value.slice(end);
     el.selectionStart = el.selectionEnd = from;
   } else {
+    if (el.inputMode === "numeric" && !/^\d+$/.test(text)) return;
+    if (el.maxLength >= 0 && value.length - (end-start) + text.length > el.maxLength) return;
     el.value = value.slice(0, start) + text + value.slice(end);
     const next = start + text.length;
     el.selectionStart = el.selectionEnd = next;
@@ -881,9 +920,12 @@ function typeInto(key) {
 }
 
 function gpItems() {
-  return [...document.querySelectorAll("#desk button, #desk input, #desk select, #desk textarea")].filter((el) => {
+  return [...document.querySelectorAll(state.osk ? ".osk button" : "#desk button, #desk input, #desk select, #desk textarea, #desk summary")].filter((el) => {
     const box = el.getBoundingClientRect();
-    return box.width > 2 && box.height > 2 && !el.disabled;
+    const x = Math.max(0, Math.min(innerWidth-1, box.left + box.width/2));
+    const y = Math.max(0, Math.min(innerHeight-1, box.top + box.height/2));
+    const top = document.elementFromPoint(x,y);
+    return box.width > 2 && box.height > 2 && !el.disabled && (top === el || el.contains(top));
   });
 }
 
@@ -896,6 +938,9 @@ function setGp(el) {
 
 function moveGp(dx, dy) {
   const current = document.querySelector(".gpfocus");
+  if (current?.matches("select") && dx) {
+    changeSelect(current, dx); return;
+  }
   if (current?.matches("input[type=range]") && dx) {
     const step = Number(current.step) || 1;
     const next = Math.min(Number(current.max || 100), Math.max(Number(current.min || 0), Number(current.value) + dx * step));
@@ -934,19 +979,33 @@ function moveGp(dx, dy) {
   if (best) setGp(best);
 }
 
-function activateGp() {
-  const el = document.querySelector(".gpfocus") || gpItems()[0];
-  if (!el) return;
-  setGp(el);
-  if (textField(el)) {
-    el.focus();
-    state.oskTarget = el;
-    setOsk(true);
-    const key = document.querySelector(".osk [data-key]");
-    if (key) setGp(key);
+function changeSelect(node, direction) {
+  const choices = [...node.options].filter(option => !option.disabled);
+  if (!choices.length) return;
+  const index = choices.indexOf(node.selectedOptions[0]);
+  node.value = choices[(index + direction + choices.length) % choices.length].value;
+  node.dispatchEvent(new Event("change", {bubbles:true}));
+}
+
+function activateGp(target = null) {
+  const node = target || document.querySelector(".gpfocus") || gpItems()[0];
+  if (!node || node.disabled) return;
+  setGp(node);
+  if (textField(node)) {
+    openKeyboard(node);
+    if (state.padMode === "focus") setGp(document.querySelector(".osk [data-key]"));
     return;
   }
-  el.click();
+  if (node.matches("select")) { changeSelect(node, 1); return; }
+  if (node.matches("input[type=range]") && state.padMode === "cursor") {
+    const rect = node.getBoundingClientRect();
+    const min = Number(node.min || 0), max = Number(node.max || 100), step = Number(node.step || 1);
+    const fraction = Math.max(0,Math.min(1,(padPointer.x-rect.left)/rect.width));
+    node.value = String(Math.min(max,min + Math.round(fraction*(max-min)/step)*step));
+    node.dispatchEvent(new Event("change", {bubbles:true}));
+    return;
+  }
+  node.click();
 }
 
 function backGp() {
@@ -954,47 +1013,85 @@ function backGp() {
     setOsk(false);
     return;
   }
-  const win = document.querySelector(".gpfocus")?.closest(".window");
+  if (state.launcher) { state.launcher = false; draw(); return; }
+  const win = document.querySelector(".window:not(.back)");
   win?.querySelector("[data-close]")?.click();
 }
 
 const gpHeld = { dir: "", next: 0 };
-function pollPad() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  const pad = [...pads].find(Boolean);
-  if (pad && document.hasFocus() && state.native.status !== "running") {
-    state.pad = true;
-    if (!state.padReady) {
-      state.padButtons = pad.buttons.map((button) => button.pressed);
-      state.padReady = true;
-    } else {
-      const now = performance.now();
-      const dirs = [
-        ["left", pad.axes[0] < -0.45 || pad.buttons[14]?.pressed, -1, 0],
-        ["right", pad.axes[0] > 0.45 || pad.buttons[15]?.pressed, 1, 0],
-        ["up", pad.axes[1] < -0.45 || pad.buttons[12]?.pressed, 0, -1],
-        ["down", pad.axes[1] > 0.45 || pad.buttons[13]?.pressed, 0, 1],
-      ];
-      const dir = dirs.find((item) => item[1]);
-      if (!dir) gpHeld.dir = "";
-      else if (gpHeld.dir !== dir[0] || now >= gpHeld.next) {
-        moveGp(dir[2], dir[3]);
-        gpHeld.next = now + (gpHeld.dir === dir[0] ? 150 : 340);
-        gpHeld.dir = dir[0];
-      }
-      pad.buttons.forEach((button, index) => {
-        const down = button.pressed;
-        if (down && !state.padButtons[index]) {
-          if (index === 0) activateGp();
-          if (index === 1) backGp();
-          if (index === 2) toggleOsk();
-          if (index === 9) document.querySelector("[data-grid]")?.click();
-        }
-        state.padButtons[index] = down;
-      });
-    }
+const padPointer = {x: 300, y: 220, time: 0, visible: false};
+function deadzone(value, zone = 0.18) {
+  return Math.abs(value) <= zone ? 0 : Math.sign(value) * (Math.abs(value)-zone)/(1-zone);
+}
+function pointerTarget() {
+  return document.elementFromPoint(padPointer.x,padPointer.y)?.closest("button,input,select,textarea,summary");
+}
+function showPadPointer(show) {
+  let node = document.getElementById("pad-cursor");
+  if (!node && show) {
+    node = document.createElement("div"); node.id = "pad-cursor";
+    node.setAttribute("aria-hidden","true"); document.body.appendChild(node);
   }
-  if (!pad || !document.hasFocus()) state.padReady = false;
+  if (node) { node.hidden = !show; node.style.transform = `translate(${padPointer.x}px,${padPointer.y}px)`; }
+  padPointer.visible = show;
+}
+function scrollPad(amount) {
+  const under = document.elementFromPoint(padPointer.x,padPointer.y);
+  let container = under;
+  while (container && container !== document.body) {
+    if (container.scrollHeight > container.clientHeight + 2 && /auto|scroll/.test(getComputedStyle(container).overflowY)) {
+      container.scrollTop += amount; return;
+    }
+    container = container.parentElement;
+  }
+  const body = document.querySelector(".window:not(.back) .wbody");
+  if (body) body.scrollTop += amount;
+}
+function pollPad(now = 0) {
+  const pad = [...(navigator.getGamepads?.() || [])].find(Boolean);
+  const active = !!pad && document.hasFocus() && state.native.status !== "running";
+  const delta = Math.min(40, Math.max(0, now-padPointer.time))/1000;
+  padPointer.time = now;
+  if (!active) {
+    state.padReady = false; state.pad = false; gpHeld.dir = ""; showPadPointer(false);
+    requestAnimationFrame(pollPad); return;
+  }
+  state.pad = true;
+  if (!state.padReady) {
+    state.padButtons = pad.buttons.map(b=>b.pressed); state.padReady = true;
+  } else {
+    const x = deadzone(pad.axes[0] || 0), y = deadzone(pad.axes[1] || 0);
+    if (x || y) {
+      state.padMode = "cursor";
+      padPointer.x = Math.max(2, Math.min(innerWidth-3, padPointer.x + Math.sign(x)*x*x*950*delta));
+      padPointer.y = Math.max(2, Math.min(innerHeight-3, padPointer.y + Math.sign(y)*y*y*950*delta));
+      const target = pointerTarget();
+      document.querySelectorAll(".gpfocus").forEach(n=>n.classList.remove("gpfocus"));
+      target?.classList.add("gpfocus");
+    }
+    const scroll = deadzone(pad.axes[3] || 0, 0.25);
+    if (scroll) scrollPad(scroll*800*delta);
+    const dirs = [["left",14,-1,0],["right",15,1,0],["up",12,0,-1],["down",13,0,1]];
+    const dir = dirs.find(item=>pad.buttons[item[1]]?.pressed);
+    if (!dir) gpHeld.dir = "";
+    else if (gpHeld.dir !== dir[0] || now >= gpHeld.next) {
+      state.padMode = "focus"; moveGp(dir[2],dir[3]);
+      gpHeld.next = now+(gpHeld.dir === dir[0] ? 170 : 360); gpHeld.dir = dir[0];
+    }
+    pad.buttons.forEach((button,index)=>{
+      if (button.pressed && !state.padButtons[index]) {
+        if (index === 0) {
+          if (state.padMode === "cursor") { const target=pointerTarget(); if (target) activateGp(target); }
+          else activateGp();
+        }
+        if (index === 1) backGp();
+        if (index === 2) toggleOsk();
+        if (index === 9) document.querySelector("[data-grid]")?.click();
+      }
+      state.padButtons[index]=button.pressed;
+    });
+  }
+  showPadPointer(state.padMode === "cursor");
   requestAnimationFrame(pollPad);
 }
 
