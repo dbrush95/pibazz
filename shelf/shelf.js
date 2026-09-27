@@ -156,6 +156,7 @@ function draw() {
         }).join("")}
       </div>
       ${ICONS.wifi}
+      <button type="button" class="clockbtn" data-exit>Exit</button>
       <button type="button" class="clockbtn ${state.tray ? "on" : ""}" data-clock>${state.clock || "—"}</button>
     </nav>`;
   bind();
@@ -499,6 +500,9 @@ function bind() {
   const desk = document.getElementById("desk");
   desk.querySelector("[data-grid]")?.addEventListener("click", () => { state.launcher = !state.launcher; state.tray = false; draw(); });
   desk.querySelector("[data-clock]")?.addEventListener("click", () => { state.tray = !state.tray; state.launcher = false; draw(); });
+  desk.querySelector("[data-exit]")?.addEventListener("click", () => {
+    api("/api/exit", {}).catch((error) => toast(error.message));
+  });
   desk.querySelectorAll("[data-app]").forEach((node) => node.addEventListener("click", () => launch(node.dataset.app)));
   desk.querySelectorAll("[data-focus]").forEach((node) => node.addEventListener("mousedown", (event) => {
     if (event.target.closest("button, input, select, textarea, label")) return;

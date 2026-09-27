@@ -169,6 +169,29 @@ def list_apps(host):
     return apps
 
 
+def exit_shelf():
+    subprocess.Popen(
+        ["pkill", "-f", "127.0.0.1:8765"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def install_launcher():
+    folder = HOME / ".local" / "share" / "applications"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "bazzpi-shelf.desktop").write_text(
+        "[Desktop Entry]\n"
+        "Name=Bazzpi Shelf\n"
+        "Comment=Open the shelf\n"
+        "Exec=/usr/local/bin/bazzpi-shelf\n"
+        "Terminal=false\n"
+        "Type=Application\n"
+        "Categories=Utility;\n"
+    )
+
+
 def terminal():
     binary = which(("lxterminal", "x-terminal-emulator", "foot", "kitty", "gnome-terminal", "konsole", "xterm"))
     if not binary:
@@ -406,6 +429,10 @@ class Handler(BaseHTTPRequestHandler):
                 path = save_wallpaper(str(body.get("name") or "wallpaper.jpg"), str(body.get("data") or ""))
                 self.send_json(200, {"path": path})
                 return
+            elif parsed.path == "/api/exit":
+                exit_shelf()
+                self.send_json(200, {"ok": True})
+                return
             elif parsed.path == "/api/power":
                 action = body.get("action")
                 if action == "sleep":
@@ -449,6 +476,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    install_launcher()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.serve_forever()
 
