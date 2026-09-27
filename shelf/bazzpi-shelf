@@ -1,73 +1,63 @@
 #!/bin/bash
-# Starts the shelf. On each boot, checks GitHub before the window opens.
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-export DISPLAY="${DISPLAY:-:0}"
-
-if [ ! -f /tmp/bazzpi-update-ran ]; then
-  touch /tmp/bazzpi-update-ran
-  if [ -f /opt/bazzpi-shelf/update.sh ]; then
-    cp /opt/bazzpi-shelf/update.sh /tmp/bazzpi-update-run.sh
-    bash /tmp/bazzpi-update-run.sh || echo "offline" > /tmp/bazzpi-update-status
-  fi
-  if [ "${BAZZPI_REEXEC:-}" != 1 ] && [ "$(cat /tmp/bazzpi-update-status 2>/dev/null)" = "updated" ]; then
-    export BAZZPI_REEXEC=1
-    exec /opt/bazzpi-shelf/bazzpi-shelf
-  fi
-fi
-
-# Turn on the Pi 4 hardware video decoder. raspi-config writes gpu_mem=128.
-# The codec device is bcm2835-codec. A changed boot file needs one more reboot.
-mark="$HOME/.config/bazzpi/hwvideo-128"
-if [ ! -f "$mark" ]; then
-  mkdir -p "$HOME/.config/bazzpi"
-  cfg=""
-  for f in /boot/firmware/config.txt /boot/config.txt; do
-    if [ -f "$f" ]; then
-      cfg="$f"
-      break
-    fi
+set -uo pipefail
+DEST="${BAZZPI_DEST:-/opt/bazzpi-shelf}"
+# Migrate the original flat-file installation without losing its settings.
+if [ ! -e "$DEST/current" ]; then
+  mkdir -p "$DEST/releases/legacy"
+  for file in index.html shelf.css shelf.js shelf.py update.sh bazzpi-shelf outfit.ttf; do
+    [ ! -f "$DEST/$file" ] || cp "$DEST/$file" "$DEST/releases/legacy/$file"
   done
-  reboot=0
-  if [ -n "$cfg" ] && ! grep -q '^gpu_mem=128' "$cfg"; then
-    sudo -n raspi-config nonint do_memory_split 128 || echo 'gpu_mem=128' | sudo -n tee -a "$cfg" >/dev/null
-    reboot=1
-  fi
-  if [ -n "$cfg" ] && ! grep -Eq '^dtoverlay=vc4-(fkms|kms)-v3d' "$cfg"; then
-    echo 'dtoverlay=vc4-kms-v3d' | sudo -n tee -a "$cfg" >/dev/null
-    reboot=1
-  fi
-  if ! id -nG | grep -qw video || ! id -nG | grep -qw render; then
-    sudo -n usermod -aG video,render,input "$(id -un)" || true
-    reboot=1
-  fi
-  if ! grep -qx 'bcm2835-codec' /etc/modules 2>/dev/null; then
-    echo 'bcm2835-codec' | sudo -n tee -a /etc/modules >/dev/null || true
-  fi
-  sudo -n modprobe bcm2835-codec 2>/dev/null || true
-  if ! command -v wlrctl >/dev/null 2>&1; then
-    sudo -n apt-get update -qq || true
-    sudo -n apt-get install -y wlrctl || true
-  fi
-  sudo -n apt-get install -y --only-upgrade moonlight-qt 2>/dev/null || true
-  touch "$mark"
-  if [ "$reboot" -eq 1 ]; then
-    sudo -n systemctl reboot || true
-    exit 0
+  ln -s "$DEST/releases/legacy" "$DEST/current"
+fi
+if [ "$(readlink -f "${BASH_SOURCE[0]}")" != "$(readlink -f "$DEST/current/bazzpi-shelf")" ]; then
+  exec bash "$DEST/current/bazzpi-shelf"
+fi
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/bazzpi"
+mkdir -p "$STATE" "$HOME/.config/bazzpi"
+exec 8>"${XDG_RUNTIME_DIR:-/tmp}/bazzpi-$(id -u).lock"
+flock -n 8 || { wlrctl toplevel focus title:Bazzpi 2>/dev/null; exit 0; }
+BOOT=$(cat /proc/sys/kernel/random/boot_id)
+if [ "$(cat "$STATE/boot-id" 2>/dev/null)" != "$BOOT" ]; then
+  printf '%s\n' "$BOOT" > "$STATE/boot-id"
+  timeout 35 bash "$DEST/current/update.sh" >> "$STATE/update.log" 2>&1 || echo failed > "$STATE/update-status"
+fi
+ROOT=$(readlink -f "$DEST/current")
+start_backend() {
+  python3 "$ROOT/shelf.py" >> "$STATE/shelf.log" 2>&1 &
+  BACKEND=$!
+  for _ in $(seq 1 40); do
+    if curl -fsS --max-time 1 http://127.0.0.1:8765/api/status >/dev/null; then return 0; fi
+    kill -0 "$BACKEND" 2>/dev/null || break
+    sleep 0.1
+  done
+  return 1
+}
+if ! start_backend; then
+  kill "$BACKEND" 2>/dev/null || true
+  wait "$BACKEND" 2>/dev/null || true
+  if [ -d "$DEST/previous" ] && [ "$(readlink -f "$DEST/previous")" != "$ROOT" ]; then
+    cat "$ROOT/revision" > "$STATE/rejected-revision" 2>/dev/null || true
+    ln -sfn "$(readlink -f "$DEST/previous")" "$DEST/current.new"
+    mv -Tf "$DEST/current.new" "$DEST/current"
+    ROOT=$(readlink -f "$DEST/current")
+    echo rollback > "$STATE/update-status"
+    start_backend || exit 1
+  else
+    exit 1
   fi
 fi
-
-if ! curl -sf --max-time 1 http://127.0.0.1:8765/api/status >/dev/null; then
-  python3 /opt/bazzpi-shelf/shelf.py >>/tmp/bazzpi-shelf.log 2>&1 &
+trap 'kill "$BACKEND" 2>/dev/null || true' EXIT
+CHROME=$(command -v chromium || command -v chromium-browser) || exit 1
+# Separate browser profiles prevent app windows attaching to the shelf process.
+# The first upgraded run migrates preferences from the old default Chromium profile.
+PROFILE="$HOME/.config/bazzpi-shelf-browser"
+if [ ! -d "$PROFILE" ] && [ -d "$HOME/.config/chromium" ]; then
+  cp -a "$HOME/.config/chromium" "$PROFILE"
+  rm -f "$PROFILE"/Singleton*
 fi
-for _ in $(seq 1 50); do
-  curl -sf --max-time 1 http://127.0.0.1:8765/api/status >/dev/null && break
-  sleep 0.1
+while kill -0 "$BACKEND" 2>/dev/null; do
+  "$CHROME" --user-data-dir="$PROFILE" --class=bazzpi-shelf --ozone-platform=wayland \
+    --kiosk --no-first-run --noerrdialogs --disable-session-crashed-bubble \
+    --disable-background-mode --app=http://127.0.0.1:8765/ >> "$STATE/shelf.log" 2>&1
+  sleep 1
 done
-if command -v chromium >/dev/null 2>&1; then
-  CHROME=chromium
-else
-  CHROME=chromium-browser
-fi
-"$CHROME" --kiosk --ozone-platform=wayland --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 --app=http://127.0.0.1:8765/ || \
-"$CHROME" --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --app=http://127.0.0.1:8765/

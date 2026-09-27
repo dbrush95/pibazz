@@ -11,6 +11,8 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
+sudo apt-get update
+sudo apt-get install -y python3 nodejs curl
 sudo mkdir -p "$DEST"
 for file in index.html shelf.css shelf.js shelf.py update.sh bazzpi-shelf; do
   sudo curl -fsSL "$BASE/$file" -o "$DEST/$file"
