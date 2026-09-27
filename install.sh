@@ -12,10 +12,11 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 sudo mkdir -p "$DEST"
-for file in index.html shelf.css shelf.js shelf.py; do
+for file in index.html shelf.css shelf.js shelf.py update.sh bazzpi-shelf; do
   sudo curl -fsSL "$BASE/$file" -o "$DEST/$file"
 done
-sudo chmod 755 "$DEST/shelf.py"
+sudo chmod 755 "$DEST/shelf.py" "$DEST/update.sh" "$DEST/bazzpi-shelf"
+sudo chown -R "$USER_NAME" "$DEST"
 if [ ! -s "$DEST/outfit.ttf" ]; then
   sudo curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf" -o "$DEST/outfit.ttf" || true
 fi
@@ -27,23 +28,7 @@ fi
 
 sudo tee /usr/local/bin/bazzpi-shelf >/dev/null << 'EOF'
 #!/bin/bash
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
-export DISPLAY="${DISPLAY:-:0}"
-if ! curl -sf http://127.0.0.1:8765/api/status >/dev/null; then
-  python3 /opt/bazzpi-shelf/shelf.py >>/tmp/bazzpi-shelf.log 2>&1 &
-fi
-for _ in $(seq 1 50); do
-  curl -sf http://127.0.0.1:8765/api/status >/dev/null && break
-  sleep 0.1
-done
-if command -v chromium >/dev/null 2>&1; then
-  CHROME=chromium
-else
-  CHROME=chromium-browser
-fi
-"$CHROME" --kiosk --ozone-platform=wayland --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 --app=http://127.0.0.1:8765/ || \
-"$CHROME" --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --app=http://127.0.0.1:8765/
+exec /opt/bazzpi-shelf/bazzpi-shelf
 EOF
 sudo chmod 755 /usr/local/bin/bazzpi-shelf
 

@@ -1,0 +1,32 @@
+#!/bin/bash
+# Starts the shelf. On each boot, checks GitHub before the window opens.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export DISPLAY="${DISPLAY:-:0}"
+
+if [ ! -f /tmp/bazzpi-update-ran ]; then
+  touch /tmp/bazzpi-update-ran
+  if [ -f /opt/bazzpi-shelf/update.sh ]; then
+    cp /opt/bazzpi-shelf/update.sh /tmp/bazzpi-update-run.sh
+    bash /tmp/bazzpi-update-run.sh || echo "offline" > /tmp/bazzpi-update-status
+  fi
+  if [ "${BAZZPI_REEXEC:-}" != 1 ] && [ "$(cat /tmp/bazzpi-update-status 2>/dev/null)" = "updated" ]; then
+    export BAZZPI_REEXEC=1
+    exec /opt/bazzpi-shelf/bazzpi-shelf
+  fi
+fi
+
+if ! curl -sf --max-time 1 http://127.0.0.1:8765/api/status >/dev/null; then
+  python3 /opt/bazzpi-shelf/shelf.py >>/tmp/bazzpi-shelf.log 2>&1 &
+fi
+for _ in $(seq 1 50); do
+  curl -sf --max-time 1 http://127.0.0.1:8765/api/status >/dev/null && break
+  sleep 0.1
+done
+if command -v chromium >/dev/null 2>&1; then
+  CHROME=chromium
+else
+  CHROME=chromium-browser
+fi
+"$CHROME" --kiosk --ozone-platform=wayland --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 --app=http://127.0.0.1:8765/ || \
+"$CHROME" --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --app=http://127.0.0.1:8765/

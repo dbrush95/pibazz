@@ -169,6 +169,16 @@ def list_apps(host):
     return apps
 
 
+def update_status():
+    try:
+        text = Path("/tmp/bazzpi-update-status").read_text().strip().splitlines()[0]
+    except (OSError, IndexError):
+        return "unknown"
+    if text in {"updated", "current", "offline", "checking"}:
+        return text
+    return "unknown"
+
+
 def exit_shelf():
     subprocess.Popen(
         ["pkill", "-f", "127.0.0.1:8765"],
@@ -328,6 +338,7 @@ class Handler(BaseHTTPRequestHandler):
                     "moonlight": bool(which(("moonlight-qt", "moonlight"))),
                     "chromium": bool(which(("chromium", "chromium-browser"))),
                     "retropie": bool(which(("emulationstation", "retroarch"))),
+                    "update": update_status(),
                 },
             )
             return

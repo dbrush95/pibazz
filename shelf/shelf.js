@@ -472,7 +472,7 @@ function settingsBody() {
       <label class="lbl">Timezone</label><input class="field" data-timezone value="${escapeHtml(s.timezone)}" />
       <label class="check"><input type="checkbox" data-ssh ${s.ssh ? "checked" : ""} /> SSH</label>
       <button type="button" class="btn primary" data-apply>Apply</button>
-      <p class="fine">${state.status.moonlight ? "Moonlight is installed." : "Moonlight is still installing. Leave the Pi online."} ${state.status.retropie ? "RetroPie is installed." : "RetroPie is not installed yet."}</p>`;
+      <p class="fine">${state.status.moonlight ? "Moonlight is installed." : "Moonlight is still installing. Leave the Pi online."} ${state.status.retropie ? "RetroPie is installed." : "RetroPie is not installed yet."} ${updateLine(state.status.update)}</p>`;
   }
   return `<div class="settings"><div class="snav">${nav}</div><div>${pane}</div></div>`;
 }
@@ -661,7 +661,17 @@ function tick() {
   if (node) node.textContent = state.clock;
 }
 
-fetch("/api/status").then((response) => response.json()).then((data) => { state.status = data; }).catch(() => {});
+function updateLine(status) {
+  if (status === "updated") return "Updated from GitHub on this boot.";
+  if (status === "current") return "Checked for updates on boot. Already current.";
+  if (status === "offline") return "Could not check for updates on boot.";
+  return "Updates are checked on boot.";
+}
+
+fetch("/api/status").then((response) => response.json()).then((data) => {
+  state.status = data;
+  if (data.update === "updated") toast("Shelf updated");
+}).catch(() => {});
 draw();
 tick();
 setInterval(tick, 10000);
