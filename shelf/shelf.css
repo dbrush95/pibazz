@@ -139,7 +139,16 @@ button { cursor: pointer; }
 }
 .card b { display: block; margin-bottom: 0.25rem; }
 .card span, .fine, .muted { color: var(--color-muted); line-height: 1.4; }
-.fine { display: block; margin-top: 0.8rem; }
+.pin {
+  font-size: 2.6rem;
+  letter-spacing: 0.28em;
+  font-weight: 650;
+  margin: 0.2rem 0 0.4rem;
+}
+.h2 { font-size: 1.05rem; margin: 1.15rem 0 0.35rem; letter-spacing: -0.02em; }
+.steps { margin: 0 0 0.8rem; padding-left: 1.2rem; color: var(--color-muted); line-height: 1.45; }
+.steps li { margin: 0.3rem 0; }
+.card.on { border-color: var(--color-accent); }
 .settings { display: grid; grid-template-columns: 11rem 1fr; gap: 1rem; }
 .navbtn {
   display: block; width: 100%; text-align: left; border: 0; background: transparent;

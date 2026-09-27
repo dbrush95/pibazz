@@ -36,9 +36,9 @@ const ICONS = {
 };
 
 const defaults = {
-  host: "", app: "Steam", resolution: "1080p", fps: 60, bitrate: 20000,
+  host: "", app: "Steam", resolution: "1080p", fps: 60, bitrate: 20000, codec: "H.264",
   theme: "light", desktop: "paper", hostname: "bazzpi", country: "US",
-  timezone: "America/New_York", ssh: true, volume: 70,
+  timezone: "America/New_York", ssh: true, volume: 70, paired: false,
 };
 
 const state = {
@@ -59,6 +59,8 @@ const state = {
   picked: null,
   url: "bazzpi://newtab",
   status: {},
+  pair: { status: "idle", pin: "", log: "" },
+  apps: ["Steam", "Desktop"],
 };
 
 function load(key, fallback) {
@@ -198,16 +200,137 @@ function bodyFor(id) {
 
 function playBody(desktop) {
   const s = state.settings;
-  return `<h1 class="h1">${desktop ? "Desktop" : "Play"}</h1>
-    <p class="sub">${desktop ? "Opens the Bazzite desktop through Moonlight, like a remote PC." : "Opens Moonlight and streams a game from the Bazzite PC."}</p>
+  const host = s.host || "the-pc";
+  const apps = state.apps.length ? state.apps : ["Steam", "Desktop"];
+  if (desktop) {
+    return `<h1 class="h1">Desktop</h1>
+      <p class="sub">Opens the Bazzite desktop through the Moonlight pairing. Set the host up in Play first.</p>
+      <p class="fine">${s.paired ? "Paired" : "Not paired yet"} · ${escapeHtml(s.host || "No address")} · ${escapeHtml(s.resolution)} ${s.fps} fps</p>
+      <button type="button" class="btn primary" data-stream="desktop">Open the PC</button>
+      <p class="fine">If the picture is blank, on the Bazzite PC open the Steam power menu and choose Switch to Desktop. Quit with Ctrl+Alt+Shift+Q.</p>`;
+  }
+  return `<h1 class="h1">Moonlight</h1>
+    <p class="sub">Pair this Pi with Sunshine on the Bazzite PC. You only do this once.</p>
+    <h2 class="h2">1. Sunshine host</h2>
     <label class="lbl">PC address</label>
     <input class="field" data-host value="${escapeHtml(s.host)}" placeholder="192.168.1.20" />
-    ${desktop ? "" : `<label class="lbl">App on the PC</label>
-      <select class="select" data-game>${["Steam", "Desktop", "Heroic"].map((name) => `<option ${s.app === name ? "selected" : ""}>${name}</option>`).join("")}</select>`}
+    <p class="fine">The PC and the Pi have to be on the same network. On the PC, Sunshine’s page is https://${escapeHtml(host)}:47990. The browser warning about the certificate is normal.</p>
+    <h2 class="h2">2. Pair</h2>
+    <ol class="steps">
+      <li>Sunshine has to be running on the PC. On Bazzite it starts with the desktop.</li>
+      <li>Press Get a PIN. If a Moonlight window opens, the PIN is on that window too.</li>
+      <li>On the PC, open https://${escapeHtml(host)}:47990, sign in, and open the PIN tab.</li>
+      <li>Type the 4 digits, name the device bazzpi, and press Send.</li>
+    </ol>
+    <p class="pin" data-pin>${escapeHtml(state.pair.pin || "····")}</p>
+    <p class="fine" data-pair-status>${escapeHtml(pairLabel(state.pair, s.paired))}</p>
     <div class="row">
-      <button type="button" class="btn primary" data-stream="${desktop ? "desktop" : "moonlight"}">Open ${desktop ? "the PC" : "Moonlight"}</button>
+      <button type="button" class="btn primary" data-pair>Get a PIN</button>
+      <button type="button" class="btn" data-moonlight>Open Moonlight</button>
     </div>
-    <p class="fine">Quit a stream with Ctrl+Alt+Shift+Q. The shelf is still here when you come back.</p>`;
+    <h2 class="h2">3. What to stream</h2>
+    <div class="row">
+      <button type="button" class="btn" data-apps>Refresh apps from the PC</button>
+    </div>
+    <div class="cards">
+      ${apps.map((name) => `<button type="button" class="card ${s.app === name ? "on" : ""}" data-pick="${escapeHtml(name)}"><b>${escapeHtml(name)}</b><span>${name === "Desktop" ? "The whole PC" : "On the PC"}</span></button>`).join("")}
+    </div>
+    <p class="fine">Desktop is the normal computer. Steam is Game Mode. If Desktop is a blank screen, switch the PC to Desktop Mode once from the Steam power menu.</p>
+    <h2 class="h2">4. Picture</h2>
+    <label class="lbl">Resolution</label>
+    <select class="select" data-res><option ${s.resolution === "1080p" ? "selected" : ""}>1080p</option><option ${s.resolution === "720p" ? "selected" : ""}>720p</option></select>
+    <label class="lbl">Frame rate</label>
+    <select class="select" data-fps><option ${Number(s.fps) === 60 ? "selected" : ""} value="60">60</option><option ${Number(s.fps) === 30 ? "selected" : ""} value="30">30</option></select>
+    <label class="lbl">Codec</label>
+    <select class="select" data-codec><option ${s.codec !== "HEVC" ? "selected" : ""}>H.264</option><option ${s.codec === "HEVC" ? "selected" : ""}>HEVC</option></select>
+    <label class="lbl">Bitrate ${Math.round(s.bitrate / 1000)} Mb/s</label>
+    <input class="slider" type="range" min="5000" max="50000" step="1000" value="${s.bitrate}" data-bitrate />
+    <p class="fine">Keep H.264 on a Pi 4. 1080p60 is right on Ethernet. Drop to 720p or 30 if the picture stutters on Wi-Fi.</p>
+    <button type="button" class="btn primary" data-stream="moonlight">Play ${escapeHtml(s.app || "Steam")}</button>`;
+}
+
+function pairLabel(pair, paired) {
+  if (pair.status === "waiting") return "Asking Sunshine for a PIN…";
+  if (pair.status === "pin") return "Type this PIN in Sunshine and press Send. This screen updates when it connects.";
+  if (pair.status === "paired" || paired) return "Paired with Sunshine.";
+  if (pair.status === "failed") return pair.log || "Pairing failed. Check the address and that Sunshine is running.";
+  return "Not paired yet.";
+}
+
+let pairTimer = null;
+
+function ensurePoll() {
+  if (pairTimer || !["waiting", "pin"].includes(state.pair.status)) return;
+  pairTimer = setInterval(pollPair, 1000);
+}
+
+async function pollPair() {
+  const host = state.settings.host;
+  if (!host) return;
+  try {
+    const data = await api(`/api/moonlight/pair?host=${encodeURIComponent(host)}`);
+    state.pair = data;
+    if (data.status === "paired") {
+      clearInterval(pairTimer);
+      pairTimer = null;
+      state.settings = { ...state.settings, paired: true };
+      save("bazzpi-settings", state.settings);
+      draw();
+      refreshApps();
+      return;
+    }
+    if (data.status === "failed") {
+      clearInterval(pairTimer);
+      pairTimer = null;
+      draw();
+      return;
+    }
+    const pin = document.querySelector("[data-pin]");
+    const status = document.querySelector("[data-pair-status]");
+    if (pin) pin.textContent = data.pin || "····";
+    if (status) status.textContent = pairLabel(data, state.settings.paired);
+  } catch (error) {
+    clearInterval(pairTimer);
+    pairTimer = null;
+    toast(error.message);
+  }
+}
+
+async function startPair() {
+  const host = deskValue("[data-host]") || state.settings.host;
+  if (!host) return toast("Add the PC address first.");
+  state.settings = { ...state.settings, host };
+  save("bazzpi-settings", state.settings);
+  state.pair = { status: "waiting", pin: "", log: "" };
+  draw();
+  try {
+    const data = await api("/api/moonlight/pair", { host });
+    state.pair = data;
+    ensurePoll();
+    draw();
+    ensurePoll();
+  } catch (error) {
+    state.pair = { status: "failed", pin: "", log: error.message };
+    toast(error.message);
+  }
+}
+
+async function refreshApps() {
+  const host = deskValue("[data-host]") || state.settings.host;
+  if (!host) return toast("Add the PC address first.");
+  try {
+    const data = await api("/api/moonlight/list", { host });
+    if (data.apps && data.apps.length) {
+      state.apps = data.apps;
+      if (!data.apps.includes(state.settings.app)) state.settings.app = data.apps[0];
+      save("bazzpi-settings", state.settings);
+      draw();
+    } else {
+      toast("Sunshine answered, but it has no apps yet.");
+    }
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function retroBody() {
@@ -312,10 +435,14 @@ function bind() {
     search.addEventListener("input", () => { state.query = search.value; draw(); desk.querySelector("[data-search]")?.focus(); });
   }
   desk.querySelector("[data-host]")?.addEventListener("change", (event) => patch({ host: event.target.value.trim() }));
-  desk.querySelector("[data-game]")?.addEventListener("change", (event) => patch({ app: event.target.value }));
   desk.querySelector("[data-res]")?.addEventListener("change", (event) => patch({ resolution: event.target.value }));
   desk.querySelector("[data-fps]")?.addEventListener("change", (event) => patch({ fps: Number(event.target.value) }));
+  desk.querySelector("[data-codec]")?.addEventListener("change", (event) => patch({ codec: event.target.value }));
   desk.querySelector("[data-bitrate]")?.addEventListener("change", (event) => patch({ bitrate: Number(event.target.value) }));
+  desk.querySelector("[data-pair]")?.addEventListener("click", startPair);
+  desk.querySelector("[data-apps]")?.addEventListener("click", refreshApps);
+  desk.querySelector("[data-moonlight]")?.addEventListener("click", () => stream("moonlight-gui"));
+  desk.querySelectorAll("[data-pick]").forEach((node) => node.addEventListener("click", () => patch({ app: node.dataset.pick })));
   desk.querySelector("[data-volume]")?.addEventListener("change", (event) => {
     patch({ volume: Number(event.target.value) });
     api("/api/volume", { volume: state.settings.volume }).catch((error) => toast(error.message));
@@ -349,6 +476,7 @@ function bind() {
     draw();
   });
   if (state.focus === "files") loadFiles();
+  ensurePoll();
 }
 
 async function stream(kind) {
@@ -357,7 +485,9 @@ async function stream(kind) {
   state.url = url;
   try {
     await api("/api/launch", {
-      kind, host: s.host, app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, url,
+      kind: kind === "moonlight-gui" ? "moonlight" : kind,
+      host: kind === "moonlight-gui" ? "" : s.host,
+      app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, url,
     });
     toast(kind === "retropie" ? "Opening RetroPie" : "Opening");
   } catch (error) {

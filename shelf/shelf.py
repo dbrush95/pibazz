@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -14,6 +15,9 @@ HOME = Path(os.environ.get("BAZZPI_HOME", str(Path.home()))).resolve()
 PORT = 8765
 HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 APP_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+PIN_RE = re.compile(r"\b(\d{4})\b")
+PAIR = {}
+PAIR_LOCK = threading.Lock()
 TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -57,15 +61,21 @@ def browser(url):
     spawn([binary, f"--user-data-dir={profile}", "--new-window", url])
 
 
-def moonlight(host, app, width, height, fps, bitrate):
+def moonlight_bin():
     binary = which(("moonlight-qt", "moonlight"))
     if not binary:
         raise RuntimeError("Moonlight is not installed yet. Leave the Pi online and try again.")
+    return binary
+
+
+def moonlight(host, app, width, height, fps, bitrate, codec):
+    binary = moonlight_bin()
     if not host:
         spawn([binary])
         return
     if not HOST_RE.match(host) or not APP_RE.match(app):
         raise RuntimeError("That address or app name is not allowed")
+    codec_flag = "H.264" if codec != "HEVC" else "HEVC"
     spawn(
         [
             binary,
@@ -79,9 +89,83 @@ def moonlight(host, app, width, height, fps, bitrate):
             "--bitrate",
             str(bitrate),
             "--video-codec",
-            "H.264",
+            codec_flag,
+            "--video-decoder",
+            "auto",
+            "--display-mode",
+            "fullscreen",
         ]
     )
+
+
+def start_pair(host):
+    if not HOST_RE.match(host):
+        raise RuntimeError("That address is not allowed")
+    binary = moonlight_bin()
+    with PAIR_LOCK:
+        old = PAIR.get(host)
+        if old and old.get("proc") and old["proc"].poll() is None:
+            old["proc"].kill()
+    proc = subprocess.Popen(
+        [binary, "pair", host],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=session_env(),
+        start_new_session=True,
+    )
+    job = {"pin": "", "status": "waiting", "log": "", "proc": proc}
+
+    def reader():
+        try:
+            for line in proc.stdout:
+                job["log"] = (job["log"] + line)[-4000:]
+                match = PIN_RE.search(line)
+                if match and job["status"] == "waiting":
+                    job["pin"] = match.group(1)
+                    job["status"] = "pin"
+        except Exception as exc:
+            job["log"] += str(exc)
+        code = proc.wait()
+        job["status"] = "paired" if code == 0 else "failed"
+
+    threading.Thread(target=reader, daemon=True).start()
+    with PAIR_LOCK:
+        PAIR[host] = job
+    return public_pair(job)
+
+
+def public_pair(job):
+    if not job:
+        return {"status": "idle", "pin": "", "log": ""}
+    return {"status": job["status"], "pin": job["pin"], "log": job["log"][-500:]}
+
+
+def list_apps(host):
+    if not HOST_RE.match(host):
+        raise RuntimeError("That address is not allowed")
+    binary = moonlight_bin()
+    proc = subprocess.run(
+        [binary, "list", host],
+        capture_output=True,
+        text=True,
+        timeout=25,
+        env=session_env(),
+    )
+    text = (proc.stdout or "") + (proc.stderr or "")
+    apps = []
+    for line in text.splitlines():
+        line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+        if not line or len(line) > 64:
+            continue
+        lower = line.lower()
+        if lower.startswith(("usage", "error", "failed", "connect", "please", "pin")):
+            continue
+        if line not in apps:
+            apps.append(line)
+    if proc.returncode != 0 and not apps:
+        raise RuntimeError(text.strip() or "Sunshine did not answer. Pair first, and check the address.")
+    return apps
 
 
 def retropie():
@@ -120,6 +204,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/moonlight/pair":
+            query = parse_qs(parsed.query)
+            host = query.get("host", [""])[0]
+            with PAIR_LOCK:
+                job = PAIR.get(host)
+            self.send_json(200, public_pair(job))
+            return
         if parsed.path == "/api/status":
             self.send_json(
                 200,
@@ -201,7 +292,8 @@ class Handler(BaseHTTPRequestHandler):
                     width, height = (1280, 720) if body.get("resolution") == "720p" else (1920, 1080)
                     fps = 30 if int(body.get("fps") or 60) <= 30 else 60
                     bitrate = max(2000, min(80000, int(body.get("bitrate") or 20000)))
-                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate)
+                    codec = "HEVC" if body.get("codec") == "HEVC" else "H.264"
+                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate, codec)
                 elif kind == "browser":
                     url = str(body.get("url") or "https://www.google.com")
                     if not url.startswith(("http://", "https://")):
@@ -213,6 +305,14 @@ class Handler(BaseHTTPRequestHandler):
                     retropie()
                 else:
                     raise RuntimeError("Unknown app")
+            elif parsed.path == "/api/moonlight/pair":
+                host = str(body.get("host") or "")
+                self.send_json(200, start_pair(host))
+                return
+            elif parsed.path == "/api/moonlight/list":
+                host = str(body.get("host") or "")
+                self.send_json(200, {"apps": list_apps(host)})
+                return
             elif parsed.path == "/api/power":
                 action = body.get("action")
                 if action == "sleep":
@@ -249,7 +349,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404)
                 return
-        except (RuntimeError, ValueError, OSError) as exc:
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
             self.send_json(400, {"error": str(exc)})
             return
         self.send_json(200, {"ok": True})
