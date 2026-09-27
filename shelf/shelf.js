@@ -45,7 +45,9 @@ const defaults = {
 
 const state = {
   settings: load("bazzpi-settings", defaults),
-  profile: load("bazzpi-profile", null),
+  profile: null,
+  unlocked: false,
+  authReady: false,
   open: [],
   focus: null,
   min: [],
@@ -131,7 +133,11 @@ function draw() {
   const desk = document.getElementById("desk");
   const theme = state.settings.theme === "dark" ? "dark" : "";
   desk.className = `desk ${theme} desk-${state.settings.desktop}`;
-  const who = state.profile && state.profile.name;
+  if (!state.authReady) {
+    desk.innerHTML = "";
+    return;
+  }
+  const who = state.authReady && state.profile && state.profile.name;
   if (!who) {
     desk.innerHTML = gateCreate();
     bind();
@@ -163,6 +169,7 @@ function draw() {
         }).join("")}
       </div>
       ${ICONS.wifi}
+      ${state.profile && state.profile.pin ? `<button type="button" class="clockbtn" data-lock>Lock</button>` : ""}
       <button type="button" class="clockbtn" data-keyboard>Keys</button>
       <button type="button" class="clockbtn" data-exit>Exit</button>
       <button type="button" class="clockbtn ${state.tray ? "on" : ""}" data-clock>${state.clock || "—"}</button>
@@ -564,22 +571,37 @@ function bind() {
   desk.querySelectorAll("[data-pace]").forEach((node) => node.addEventListener("click", () => { state.pace = node.dataset.pace; draw(); }));
   desk.querySelectorAll("[data-console]").forEach((node) => node.addEventListener("click", () => { state.picked = node.dataset.console; draw(); }));
   desk.querySelector("[data-apply]")?.addEventListener("click", applySystem);
-  desk.querySelector("[data-create]")?.addEventListener("submit", (event) => {
+  desk.querySelector("[data-create]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = new FormData(event.target).get("name").trim();
     const pin = String(new FormData(event.target).get("pin") || "").replace(/\D/g, "");
     if (!name) return toast("Add a name.");
     if (pin && pin.length !== 4) return toast("Use a 4 digit code, or leave it empty.");
-    state.profile = { name, pin };
+    try {
+      await api("/api/profile", { name, pin });
+    } catch (error) {
+      if (!/already/i.test(error.message)) return toast(error.message);
+    }
+    state.profile = { name, pin: pin ? "1" : "" };
     state.unlocked = true;
-    save("bazzpi-profile", state.profile);
+    localStorage.removeItem("bazzpi-profile");
     draw();
   });
-  desk.querySelector("[data-unlock]")?.addEventListener("submit", (event) => {
+  desk.querySelector("[data-unlock]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const pin = String(new FormData(event.target).get("pin") || "");
-    if (pin !== state.profile.pin) return toast("That code does not match.");
+    try {
+      await api("/api/unlock", { pin });
+    } catch (error) {
+      return toast(error.message);
+    }
     state.unlocked = true;
+    draw();
+  });
+  desk.querySelector("[data-lock]")?.addEventListener("click", () => {
+    if (!state.profile?.pin) return;
+    state.unlocked = false;
+    state.osk = false;
     draw();
   });
   if (state.focus === "files") loadFiles();
@@ -687,6 +709,33 @@ function updateLine(status) {
   if (status === "current") return "Checked for updates on boot. Already current.";
   if (status === "offline") return "Could not check for updates on boot.";
   return "Updates are checked on boot.";
+}
+
+async function loadDeviceAuth() {
+  try {
+    const data = await api("/api/profile");
+    if (data.name) {
+      state.profile = { name: data.name, pin: data.hasPin ? "1" : "" };
+      state.unlocked = !data.hasPin;
+    } else {
+      const old = load("bazzpi-profile", null);
+      if (old && old.name && old.pin !== "1") {
+        const pin = /^\d{4}$/.test(String(old.pin || "")) ? String(old.pin) : "";
+        await api("/api/profile", { name: old.name, pin });
+        state.profile = { name: old.name, pin: pin ? "1" : "" };
+        state.unlocked = !pin;
+      } else {
+        state.profile = null;
+      }
+      localStorage.removeItem("bazzpi-profile");
+    }
+  } catch {
+    const old = load("bazzpi-profile", null);
+    state.profile = old;
+    state.unlocked = !(old && old.pin);
+  }
+  state.authReady = true;
+  draw();
 }
 
 fetch("/api/status").then((response) => response.json()).then((data) => {
@@ -906,7 +955,7 @@ function pollPad() {
   requestAnimationFrame(pollPad);
 }
 
-draw();
+loadDeviceAuth();
 tick();
 setInterval(tick, 10000);
 requestAnimationFrame(pollPad);

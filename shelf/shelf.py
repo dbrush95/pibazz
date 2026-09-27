@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Local shelf for the Pi. Serves the page and starts the real programs."""
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -13,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent
 HOME = Path(os.environ.get("BAZZPI_HOME", str(Path.home()))).resolve()
+PROFILE_PATH = HOME / ".config" / "bazzpi" / "profile.json"
 PORT = 8765
 HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
 APP_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
@@ -43,6 +47,49 @@ TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".ttf": "font/ttf",
 }
+
+
+def read_profile():
+    try:
+        data = json.loads(PROFILE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not str(data.get("name") or "").strip():
+        return None
+    return data
+
+
+def write_profile(data):
+    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROFILE_PATH.write_text(json.dumps(data))
+    os.chmod(PROFILE_PATH, 0o600)
+
+
+def public_profile(data):
+    if not data:
+        return {"name": "", "hasPin": False}
+    return {"name": str(data.get("name") or ""), "hasPin": bool(data.get("pin"))}
+
+
+def hash_pin(pin, salt=None):
+    salt = salt or secrets.token_hex(16)
+    raw_salt = bytes.fromhex(salt)
+    try:
+        digest = hashlib.scrypt(pin.encode(), salt=raw_salt, n=2**14, r=8, p=1, dklen=32).hex()
+    except ValueError:
+        digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), raw_salt, 200000).hex()
+    return salt, digest
+
+
+def check_pin(data, pin):
+    stored = str(data.get("pin") or "")
+    salt = str(data.get("salt") or "")
+    if not stored:
+        return True
+    if not salt or len(pin) != 4 or not pin.isdigit():
+        return False
+    _, digest = hash_pin(pin, salt)
+    return hmac.compare_digest(digest, stored)
 
 
 def session_env():
@@ -353,6 +400,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/profile":
+            self.send_json(200, public_profile(read_profile()))
+            return
         if parsed.path == "/api/wallpapers":
             self.send_json(200, {"wallpapers": list_wallpapers()})
             return
@@ -452,7 +502,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
             return
         try:
-            if parsed.path == "/api/launch":
+            if parsed.path == "/api/profile":
+                name = str(body.get("name") or "").strip()
+                pin = str(body.get("pin") or "")
+                if not name or len(name) > 32:
+                    raise RuntimeError("Add a name.")
+                if pin and (len(pin) != 4 or not pin.isdigit()):
+                    raise RuntimeError("Use a 4 digit code, or leave it empty.")
+                if read_profile():
+                    raise RuntimeError("A profile is already on this Pi.")
+                record = {"name": name}
+                if pin:
+                    salt, digest = hash_pin(pin)
+                    record["salt"] = salt
+                    record["pin"] = digest
+                write_profile(record)
+            elif parsed.path == "/api/unlock":
+                data = read_profile()
+                if not data:
+                    raise RuntimeError("Create a profile first.")
+                if not check_pin(data, str(body.get("pin") or "")):
+                    raise RuntimeError("That code does not match.")
+            elif parsed.path == "/api/launch":
                 kind = body.get("kind")
                 if kind in ("moonlight", "desktop"):
                     app = "Desktop" if kind == "desktop" else str(body.get("app") or "Steam")
