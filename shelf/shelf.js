@@ -265,11 +265,9 @@ function playBody(desktop) {
     <select class="select" data-res><option ${s.resolution === "1080p" ? "selected" : ""}>1080p</option><option ${s.resolution === "720p" ? "selected" : ""}>720p</option></select>
     <label class="lbl">Frame rate</label>
     <select class="select" data-fps><option ${Number(s.fps) === 60 ? "selected" : ""} value="60">60</option><option ${Number(s.fps) === 30 ? "selected" : ""} value="30">30</option></select>
-    <label class="lbl">Codec</label>
-    <select class="select" data-codec><option ${s.codec !== "HEVC" ? "selected" : ""}>H.264</option><option ${s.codec === "HEVC" ? "selected" : ""}>HEVC</option></select>
     <label class="lbl">Bitrate ${Math.round(s.bitrate / 1000)} Mb/s</label>
     <input class="slider" type="range" min="5000" max="50000" step="1000" value="${s.bitrate}" data-bitrate />
-    <p class="fine">Keep H.264 on a Pi 4. 1080p60 is right on Ethernet. Drop to 720p or 30 if the picture stutters on Wi-Fi.</p>
+    <p class="fine">The Pi always asks the PC for H.264 and decodes it in hardware. 1080p60 is right on Ethernet. Drop to 720p or 30 if the picture stutters on Wi-Fi.</p>
     <button type="button" class="btn primary" data-stream="moonlight">Play ${escapeHtml(s.app || "Steam")}</button>`;
 }
 

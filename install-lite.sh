@@ -20,7 +20,7 @@ fi
 
 echo "Installing the screen, Chromium, Moonlight, RetroArch, and a terminal."
 sudo apt-get update
-sudo apt-get install -y labwc seatd chromium foot raspi-config || sudo apt-get install -y labwc seatd chromium-browser foot
+sudo apt-get install -y labwc seatd chromium foot raspi-config wlrctl || sudo apt-get install -y labwc seatd chromium-browser foot wlrctl
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
   echo "Chromium did not install."
   exit 1

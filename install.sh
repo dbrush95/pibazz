@@ -21,6 +21,11 @@ if [ ! -s "$DEST/outfit.ttf" ]; then
   sudo curl -fsSL "https://raw.githubusercontent.com/google/fonts/main/ofl/outfit/Outfit%5Bwght%5D.ttf" -o "$DEST/outfit.ttf" || true
 fi
 
+if ! command -v wlrctl >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y wlrctl || true
+fi
+
 if ! command -v chromium >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
   sudo apt-get update
   sudo apt-get install -y chromium || sudo apt-get install -y chromium-browser

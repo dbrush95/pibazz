@@ -28,5 +28,5 @@ if command -v chromium >/dev/null 2>&1; then
 else
   CHROME=chromium-browser
 fi
-"$CHROME" --kiosk --ozone-platform=wayland --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 --app=http://127.0.0.1:8765/ || \
-"$CHROME" --kiosk --noerrdialogs --disable-session-crashed-bubble --disable-infobars --app=http://127.0.0.1:8765/
+"$CHROME" --ozone-platform=wayland --app=http://127.0.0.1:8765/ --start-maximized --noerrdialogs --disable-session-crashed-bubble --disable-infobars --check-for-update-interval=31536000 || \
+"$CHROME" --app=http://127.0.0.1:8765/ --start-maximized --noerrdialogs --disable-session-crashed-bubble --disable-infobars

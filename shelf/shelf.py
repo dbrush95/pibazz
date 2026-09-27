@@ -10,6 +10,7 @@ import secrets
 import shutil
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -109,14 +110,43 @@ def which(names):
     return None
 
 
-def spawn(argv):
+def spawn(argv, env=None):
     subprocess.Popen(
         argv,
-        env=session_env(),
+        env=env or session_env(),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+def tuck_shelf(away):
+    tool = which(("wlrctl",))
+    if not tool:
+        return
+    env = session_env()
+    action = ["window", "minimize", "state:active"] if away else ["window", "focus", "state:minimized"]
+    subprocess.run([tool, *action], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if away:
+        time.sleep(0.2)
+
+
+def run_in_front(argv, env=None):
+    environment = env or session_env()
+
+    def work():
+        tuck_shelf(True)
+        proc = subprocess.Popen(
+            argv,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        proc.wait()
+        tuck_shelf(False)
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 def browser(url):
@@ -124,7 +154,7 @@ def browser(url):
     if not binary:
         raise RuntimeError("Chromium is not installed")
     profile = HOME / ".config" / "bazzpi-browser"
-    spawn([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--new-window", url])
+    run_in_front([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--new-window", url])
 
 
 def moonlight_bin():
@@ -134,15 +164,21 @@ def moonlight_bin():
     return binary
 
 
+def moonlight_env():
+    env = session_env()
+    env["H264_DECODER_HINT"] = "h264_v4l2m2m"
+    return env
+
+
 def moonlight(host, app, width, height, fps, bitrate, codec):
     binary = moonlight_bin()
+    env = moonlight_env()
     if not host:
-        spawn([binary])
+        run_in_front([binary], env)
         return
     if not HOST_RE.match(host) or not APP_RE.match(app):
         raise RuntimeError("That address or app name is not allowed")
-    codec_flag = "H.264" if codec != "HEVC" else "HEVC"
-    spawn(
+    run_in_front(
         [
             binary,
             "stream",
@@ -155,12 +191,13 @@ def moonlight(host, app, width, height, fps, bitrate, codec):
             "--bitrate",
             str(bitrate),
             "--video-codec",
-            codec_flag,
+            "H.264",
             "--video-decoder",
-            "auto",
+            "hardware",
             "--display-mode",
             "fullscreen",
-        ]
+        ],
+        env,
     )
 
 
@@ -172,12 +209,13 @@ def start_pair(host):
         old = PAIR.get(host)
         if old and old.get("proc") and old["proc"].poll() is None:
             old["proc"].kill()
+    tuck_shelf(True)
     proc = subprocess.Popen(
         [binary, "pair", host],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=session_env(),
+        env=moonlight_env(),
         start_new_session=True,
     )
     job = {"pin": "", "status": "waiting", "log": "", "proc": proc}
@@ -193,6 +231,7 @@ def start_pair(host):
         except Exception as exc:
             job["log"] += str(exc)
         code = proc.wait()
+        tuck_shelf(False)
         job["status"] = "paired" if code == 0 else "failed"
 
     threading.Thread(target=reader, daemon=True).start()
@@ -271,7 +310,7 @@ def terminal():
     binary = which(("foot", "lxterminal", "x-terminal-emulator", "kitty", "gnome-terminal", "konsole", "xterm"))
     if not binary:
         raise RuntimeError("No terminal program is installed")
-    spawn([binary])
+    run_in_front([binary])
 
 
 def find_core(hint):
@@ -290,7 +329,7 @@ def retroarch(system="", rom=""):
     if not binary:
         raise RuntimeError("RetroArch is not installed")
     if binary.endswith("emulationstation") and not rom:
-        spawn([binary])
+        run_in_front([binary])
         return
     folder = HOME / "ROMs" / system if system else HOME / "ROMs"
     folder.mkdir(parents=True, exist_ok=True)
@@ -305,7 +344,7 @@ def retroarch(system="", rom=""):
             command += ["-L", str(core), str(target)]
         else:
             command.append(str(target))
-    spawn(command)
+    run_in_front(command)
 
 
 def wallpaper_roots():
