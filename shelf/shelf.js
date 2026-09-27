@@ -38,7 +38,7 @@ const ICONS = {
 };
 
 const defaults = {
-  host: "", app: "Steam", resolution: "1080p", fps: 60, bitrate: 20000, codec: "H.264",
+  host: "", app: "Steam", resolution: "1080p", fps: 60, bitrate: 20000, codec: "H.264", decoder: "auto",
   theme: "light", desktop: "paper", hostname: "bazzpi", country: "US",
   timezone: "America/New_York", ssh: true, volume: 70, paired: false, wallpaper: "",
 };
@@ -56,6 +56,9 @@ const state = {
   query: "",
   section: "Appearance",
   notice: "",
+  diagnostics: null,
+  native: { status: "idle" },
+  token: "",
   clock: "",
   filePath: "",
   fileText: "",
@@ -91,13 +94,21 @@ function save(key, value) {
 }
 
 function patch(next) {
+  if ("host" in next && next.host !== state.settings.host) {
+    clearInterval(pairTimer); pairTimer = null;
+    state.pair = { status: "idle", pin: "", log: "" };
+    state.diagnostics = null;
+    state.apps = ["Steam", "Desktop"];
+  }
   state.settings = { ...state.settings, ...next };
   save("bazzpi-settings", state.settings);
   draw();
 }
 
 async function api(path, body) {
-  const response = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
+  const headers = { "X-Bazzpi-Token": state.token };
+  if (body) headers["Content-Type"] = "application/json";
+  const response = await fetch(path, { headers, ...(body ? { method: "POST", body: JSON.stringify(body) } : {}) });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "That did not work");
   return data;
@@ -139,12 +150,12 @@ function draw() {
   }
   const who = state.authReady && state.profile && state.profile.name;
   if (!who) {
-    desk.innerHTML = gateCreate();
+    desk.innerHTML = gateCreate() + (state.notice ? `<div class="toast" role="alert">${escapeHtml(state.notice)}</div>` : "");
     bind();
     return;
   }
   if (state.profile.pin && !state.unlocked) {
-    desk.innerHTML = gateLock();
+    desk.innerHTML = gateLock() + (state.notice ? `<div class="toast" role="alert">${escapeHtml(state.notice)}</div>` : "");
     bind();
     return;
   }
@@ -156,7 +167,9 @@ function draw() {
   desk.innerHTML = `
     <div class="wallpaper"${wall}></div>
     ${state.notice ? `<div class="toast">${escapeHtml(state.notice)}</div>` : ""}
+    <div class="home-welcome"><p class="kicker">Your living room, connected</p><h1>Hi, ${escapeHtml(state.profile.name)}.</h1><p>Pick something to play.</p></div>
     <div class="stage">${windows}</div>
+    ${state.native.status === "failed" ? `<aside class="launch-error" role="alert"><b>Could not start ${escapeHtml(state.native.label)}</b><pre>${escapeHtml(state.native.log || "No output was recorded. Try Test connection in Play.")}</pre><button class="btn" data-dismiss-error>Dismiss</button></aside>` : ""}
     ${state.launcher ? launcherHtml(apps) : ""}
     ${state.tray ? trayHtml() : ""}
     <nav class="shelf" aria-label="Shelf">
@@ -171,7 +184,7 @@ function draw() {
       ${ICONS.wifi}
       ${state.profile && state.profile.pin ? `<button type="button" class="clockbtn" data-lock>Lock</button>` : ""}
       <button type="button" class="clockbtn" data-keyboard>Keys</button>
-      <button type="button" class="clockbtn" data-exit>Exit</button>
+      <span class="home-hint">Super + H · Home</span>
       <button type="button" class="clockbtn ${state.tray ? "on" : ""}" data-clock>${state.clock || "—"}</button>
     </nav>`;
   bind();
@@ -202,8 +215,9 @@ function trayHtml() {
 function windowFor(id) {
   const name = APPS.find((app) => app[0] === id)[1];
   const back = state.focus !== id ? " back" : "";
-  return `<section class="window${back}" data-focus="${id}">
+  return `<section class="window${back}" style="z-index:${state.focus === id ? 2 : 1}" data-focus="${id}">
     <div class="wbar"><span class="glyph">${ICONS[id]}</span><span class="wtitle">${name}</span><span class="wgrow"></span>
+      <button type="button" class="iconbtn" data-max aria-label="Maximize">□</button>
       <button type="button" class="iconbtn" data-min="${id}" aria-label="Minimize">–</button>
       <button type="button" class="iconbtn" data-close="${id}" aria-label="Close">×</button>
     </div>
@@ -239,10 +253,12 @@ function playBody(desktop) {
     <label class="lbl">PC address</label>
     <input class="field" data-host value="${escapeHtml(s.host)}" placeholder="192.168.1.20" />
     <p class="fine">The PC and the Pi have to be on the same network. On the PC, Sunshine’s page is https://${escapeHtml(host)}:47990. The browser warning about the certificate is normal.</p>
+    <div class="row"><button type="button" class="btn" data-diagnose>Test connection</button></div>
+    <div class="diagnostics">${diagnosticHtml()}</div>
     <h2 class="h2">2. Pair</h2>
     <ol class="steps">
-      <li>Sunshine has to be running on the PC. On Bazzite it starts with the desktop.</li>
-      <li>Press Get a PIN. If a Moonlight window opens, the PIN is on that window too.</li>
+      <li>Sunshine must be running in the PC session you want to capture.</li>
+      <li>Press Get a PIN. Keep this screen open while entering the code on your PC.</li>
       <li>On the PC, open https://${escapeHtml(host)}:47990, sign in, and open the PIN tab.</li>
       <li>Type the 4 digits, name the device bazzpi, and press Send.</li>
     </ol>
@@ -259,23 +275,40 @@ function playBody(desktop) {
     <div class="cards">
       ${apps.map((name) => `<button type="button" class="card ${s.app === name ? "on" : ""}" data-pick="${escapeHtml(name)}"><b>${escapeHtml(name)}</b><span>${name === "Desktop" ? "The whole PC" : "On the PC"}</span></button>`).join("")}
     </div>
-    <p class="fine">Desktop is the normal computer. Steam is Game Mode. If Desktop is a blank screen, switch the PC to Desktop Mode once from the Steam power menu.</p>
+    <p class="fine">These are the apps configured in Sunshine. Launching Steam does not switch Bazzite between Desktop and Game Mode.</p>
     <h2 class="h2">4. Picture</h2>
     <label class="lbl">Resolution</label>
     <select class="select" data-res><option ${s.resolution === "1080p" ? "selected" : ""}>1080p</option><option ${s.resolution === "720p" ? "selected" : ""}>720p</option></select>
     <label class="lbl">Frame rate</label>
     <select class="select" data-fps><option ${Number(s.fps) === 60 ? "selected" : ""} value="60">60</option><option ${Number(s.fps) === 30 ? "selected" : ""} value="30">30</option></select>
     <label class="lbl">Bitrate ${Math.round(s.bitrate / 1000)} Mb/s</label>
-    <input class="slider" type="range" min="5000" max="50000" step="1000" value="${s.bitrate}" data-bitrate />
-    <p class="fine">The Pi always asks the PC for H.264 and decodes it in hardware. 1080p60 is right on Ethernet. Drop to 720p or 30 if the picture stutters on Wi-Fi.</p>
+    <input class="slider" type="range" min="5000" max="40000" step="1000" value="${s.bitrate}" data-bitrate />
+    <p class="fine">H.264 · 1080p60 · 20 Mb/s is the starting preset. Keep TV output at 1080p too. Automatic decoding avoids blocking launch when hardware decoding is unavailable; check the Moonlight statistics for actual performance.</p>
+    <label class="lbl">Video decoder</label><select class="select" data-decoder>${["auto", "hardware", "software"].map(v => `<option value="${v}" ${s.decoder === v ? "selected" : ""}>${{auto:"Automatic (recommended)",hardware:"Hardware only",software:"Software (diagnostic)"}[v]}</option>`).join("")}</select>
+    <p class="fine">Close an app to return home. Super + H shows the shelf; Alt + Tab returns to an open app. End a stream with Ctrl + Alt + Shift + Q.</p>
     <button type="button" class="btn primary" data-stream="moonlight">Play ${escapeHtml(s.app || "Steam")}</button>`;
+}
+
+function diagnosticHtml() {
+  const d = state.diagnostics;
+  if (!d) return '<p class="fine">Check the PC address and Sunshine services before pairing.</p>';
+  if (d.loading) return '<p role="status">Checking the local connection…</p>';
+  return `<div class="check-grid">${d.checks.map(c => `<div class="check-result ${c.ok ? "good" : "bad"}"><b>${c.ok ? "✓" : "!"} ${escapeHtml(c.label)}</b><span>TCP ${c.port} · ${c.ok ? c.ms + " ms" : escapeHtml(c.error)}</span></div>`).join("")}</div><p class="fine">${escapeHtml(d.note)}</p>`;
+}
+
+async function testConnection() {
+  const host = deskValue("[data-host]") || state.settings.host;
+  if (!host) return toast("Add the PC address first.");
+  state.diagnostics = { loading: true }; draw();
+  try { state.diagnostics = await api("/api/moonlight/diagnose", {host}); draw(); }
+  catch (error) { state.diagnostics = null; toast(error.message); }
 }
 
 function pairLabel(pair, paired) {
   if (pair.status === "waiting") return "Asking Sunshine for a PIN…";
   if (pair.status === "pin") return "Type this PIN in Sunshine and press Send. This screen updates when it connects.";
-  if (pair.status === "paired" || paired) return "Paired with Sunshine.";
   if (pair.status === "failed") return pair.log || "Pairing failed. Check the address and that Sunshine is running.";
+  if (pair.status === "paired" || paired) return "Paired with Sunshine.";
   return "Not paired yet.";
 }
 
@@ -323,6 +356,7 @@ async function startPair() {
   if (!host) return toast("Add the PC address first.");
   state.settings = { ...state.settings, host };
   save("bazzpi-settings", state.settings);
+  state.settings.paired = false;
   state.pair = { status: "waiting", pin: "", log: "" };
   draw();
   try {
@@ -448,7 +482,7 @@ async function runShell(event) {
 function browserBody() {
   return `<h1 class="h1">Browser</h1>
     <div class="chrome"><input class="field omni" data-url value="${escapeHtml(state.url)}" /><button type="button" class="btn primary" data-stream="browser">Open</button></div>
-    <p class="sub">Opens Chromium on this Pi, outside the shelf, so a page can sign in.</p>`;
+    <p class="sub">Your browser opens with normal tabs, sign-ins, and downloads. Close it to return here, or press Super + H for Home.</p>`;
 }
 
 function settingsBody() {
@@ -478,7 +512,7 @@ function settingsBody() {
       <label class="lbl">Frame rate</label>
       <select class="select" data-fps><option ${s.fps === 60 ? "selected" : ""} value="60">60</option><option ${s.fps === 30 ? "selected" : ""} value="30">30</option></select>
       <label class="lbl">Bitrate ${s.bitrate}</label>
-      <input class="slider" type="range" min="2000" max="60000" step="1000" value="${s.bitrate}" data-bitrate />`;
+      <input class="slider" type="range" min="2000" max="40000" step="1000" value="${s.bitrate}" data-bitrate />`;
   } else {
     pane = `<h1 class="h1">Pi</h1><p class="sub">These change the machine, the same jobs as raspi-config.</p>
       <label class="lbl">Hostname</label><input class="field" data-hostname value="${escapeHtml(s.hostname)}" />
@@ -518,6 +552,10 @@ function gateLock() {
 
 function bind() {
   const desk = document.getElementById("desk");
+  desk.querySelector("[data-dismiss-error]")?.addEventListener("click", () => { state.native.status = "idle"; draw(); });
+  desk.querySelector("[data-diagnose]")?.addEventListener("click", testConnection);
+  desk.querySelectorAll("[data-max]").forEach(node => node.addEventListener("click", () => node.closest(".window").classList.toggle("maximized")));
+  desk.querySelector("[data-decoder]")?.addEventListener("change", event => patch({decoder: event.target.value}));
   desk.querySelector("[data-grid]")?.addEventListener("click", () => { state.launcher = !state.launcher; state.tray = false; draw(); });
   desk.querySelector("[data-clock]")?.addEventListener("click", () => { state.tray = !state.tray; state.launcher = false; draw(); });
   desk.querySelector("[data-exit]")?.addEventListener("click", () => {
@@ -543,7 +581,7 @@ function bind() {
   if (search) {
     search.addEventListener("input", () => { state.query = search.value; draw(); desk.querySelector("[data-search]")?.focus(); });
   }
-  desk.querySelector("[data-host]")?.addEventListener("change", (event) => patch({ host: event.target.value.trim() }));
+  desk.querySelector("[data-host]")?.addEventListener("change", (event) => patch({ host: event.target.value.trim(), paired: false }));
   desk.querySelector("[data-res]")?.addEventListener("change", (event) => patch({ resolution: event.target.value }));
   desk.querySelector("[data-fps]")?.addEventListener("change", (event) => patch({ fps: Number(event.target.value) }));
   desk.querySelector("[data-codec]")?.addEventListener("change", (event) => patch({ codec: event.target.value }));
@@ -576,7 +614,7 @@ function bind() {
     if (!name) return toast("Add a name.");
     if (pin && pin.length !== 4) return toast("Use a 4 digit code, or leave it empty.");
     try {
-      await api("/api/profile", { name, pin });
+      state.token = (await api("/api/profile", { name, pin })).token || "";
     } catch (error) {
       if (!/already/i.test(error.message)) return toast(error.message);
     }
@@ -589,7 +627,7 @@ function bind() {
     event.preventDefault();
     const pin = String(new FormData(event.target).get("pin") || "");
     try {
-      await api("/api/unlock", { pin });
+      state.token = (await api("/api/unlock", { pin })).token || "";
     } catch (error) {
       return toast(error.message);
     }
@@ -598,6 +636,8 @@ function bind() {
   });
   desk.querySelector("[data-lock]")?.addEventListener("click", () => {
     if (!state.profile?.pin) return;
+    api("/api/lock", {}).catch(() => {});
+    state.token = "";
     state.unlocked = false;
     state.osk = false;
     draw();
@@ -618,9 +658,10 @@ async function stream(kind) {
     await api("/api/launch", {
       kind: kind === "moonlight-gui" ? "moonlight" : kind,
       host: kind === "moonlight-gui" ? "" : s.host,
-      app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, url,
+      app: s.app, resolution: s.resolution, fps: s.fps, bitrate: s.bitrate, codec: s.codec, decoder: s.decoder, url,
       system: (CONSOLES.find((item) => item[0] === state.picked) || [])[1] || "",
     });
+    state.native = {status: "running"};
     toast(kind === "retropie" ? "Opening RetroArch" : "Opening");
   } catch (error) {
     toast(error.message);
@@ -705,6 +746,9 @@ function tick() {
 function updateLine(status) {
   if (status === "updated") return "Updated from GitHub on this boot.";
   if (status === "current") return "Checked for updates on boot. Already current.";
+  if (status === "rollback") return "Restored the previous version after an update failed to start.";
+  if (status === "failed") return "Update failed; keeping the installed version.";
+  if (status === "disabled") return "Automatic updates are paused.";
   if (status === "offline") return "Could not check for updates on boot.";
   return "Updates are checked on boot.";
 }
@@ -918,7 +962,7 @@ const gpHeld = { dir: "", next: 0 };
 function pollPad() {
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = [...pads].find(Boolean);
-  if (pad) {
+  if (pad && document.hasFocus() && state.native.status !== "running") {
     state.pad = true;
     if (!state.padReady) {
       state.padButtons = pad.buttons.map((button) => button.pressed);
@@ -950,6 +994,7 @@ function pollPad() {
       });
     }
   }
+  if (!pad || !document.hasFocus()) state.padReady = false;
   requestAnimationFrame(pollPad);
 }
 
@@ -957,3 +1002,16 @@ loadDeviceAuth();
 tick();
 setInterval(tick, 10000);
 requestAnimationFrame(pollPad);
+
+// Poll only after local profile access; never redraw while someone is typing.
+setInterval(async () => {
+  if (!state.profile || (state.profile.pin && !state.unlocked)) return;
+  try {
+    const native = await api("/api/launch-status");
+    if (state.native.status === "running" && native.status !== "running") {
+      state.native = native;
+      if (native.status === "failed") draw();
+      else toast("Welcome back");
+    }
+  } catch (_) { /* Backend restarting: next poll retries. */ }
+}, 1500);

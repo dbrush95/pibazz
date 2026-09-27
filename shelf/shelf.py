@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Local shelf for the Pi. Serves the page and starts the real programs."""
 import base64
+import socket
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
@@ -20,8 +22,12 @@ HOME = Path(os.environ.get("BAZZPI_HOME", str(Path.home()))).resolve()
 PROFILE_PATH = HOME / ".config" / "bazzpi" / "profile.json"
 PORT = 8765
 HOST_RE = re.compile(r"^[A-Za-z0-9._-]{1,253}$")
-APP_RE = re.compile(r"^[A-Za-z0-9 ._-]{1,64}$")
+APP_RE = re.compile(r"^[^\x00-\x1f]{1,256}$")
 PIN_RE = re.compile(r"\b(\d{4})\b")
+LAUNCH = {"status": "idle", "label": "", "log": "", "code": None}
+LAUNCH_LOCK = threading.Lock()
+AUTH_TOKEN = secrets.token_urlsafe(32)
+UNLOCKED = False
 PAIR = {}
 PAIR_LOCK = threading.Lock()
 SYSTEMS = {
@@ -62,8 +68,10 @@ def read_profile():
 
 def write_profile(data):
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(data))
-    os.chmod(PROFILE_PATH, 0o600)
+    temp = PROFILE_PATH.with_suffix(".tmp")
+    temp.touch(mode=0o600, exist_ok=True)
+    temp.write_text(json.dumps(data))
+    os.replace(temp, PROFILE_PATH)
 
 
 def public_profile(data):
@@ -122,31 +130,83 @@ def spawn(argv, env=None):
 
 def tuck_shelf(away):
     tool = which(("wlrctl",))
-    if not tool:
-        return
-    env = session_env()
-    action = ["window", "minimize", "state:active"] if away else ["window", "focus", "state:minimized"]
-    subprocess.run([tool, *action], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if away:
-        time.sleep(0.2)
+    if tool:
+        subprocess.run([tool, "toplevel", "minimize" if away else "focus", "title:Bazzpi"],
+                       env=session_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=3)
 
 
 def run_in_front(argv, env=None):
-    environment = env or session_env()
+    # One native application at a time: predictable return-to-home on a TV.
+    with LAUNCH_LOCK:
+        if LAUNCH["status"] == "running":
+            raise RuntimeError("An app is already open. Use Alt+Tab to return to it, then close it first.")
+        LAUNCH.update(status="running", label=Path(argv[0]).name, log="", code=None)
+    folder = HOME / ".local/state/bazzpi"
+    log = folder / "last-app.log"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        output = log.open("w")
+        proc = subprocess.Popen(argv, env=env or session_env(), stdout=output,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as exc:
+        if "output" in locals():
+            output.close()
+        with LAUNCH_LOCK:
+            LAUNCH.update(status="failed", log=str(exc))
+        raise RuntimeError(str(exc)) from exc
 
     def work():
-        tuck_shelf(True)
-        proc = subprocess.Popen(
-            argv,
-            env=environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        proc.wait()
-        tuck_shelf(False)
-
+        try:
+            try:
+                tuck_shelf(True)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            code = proc.wait()
+            output.close()
+            with log.open("rb") as stream:
+                stream.seek(max(0, log.stat().st_size - 6000))
+                tail = stream.read().decode(errors="replace")
+            with LAUNCH_LOCK:
+                LAUNCH.update(status="finished" if code == 0 else "failed", code=code, log=tail)
+        finally:
+            output.close()
+            try:
+                tuck_shelf(False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     threading.Thread(target=work, daemon=True).start()
+
+
+def normalize_host(value):
+    value = str(value).strip()
+    if value.startswith(("http://", "https://")):
+        parsed = urlparse(value)
+        value = parsed.hostname or ""
+    if value.endswith(":47990"):
+        value = value[:-6]
+    if not HOST_RE.fullmatch(value) or value.startswith("-"):
+        raise RuntimeError("Use the PC's local IPv4 address or hostname, for example 192.168.1.20.")
+    return value
+
+
+def diagnose(host):
+    host = normalize_host(host)
+    def probe(item):
+        port, label = item
+        start = time.monotonic()
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return {"port": port, "label": label, "ok": True,
+                        "ms": round((time.monotonic() - start) * 1000)}
+        except OSError as exc:
+            return {"port": port, "label": label, "ok": False, "error": str(exc)}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        checks = list(pool.map(probe, [(47989, "Discovery / host"), (47984, "Pairing"),
+                                      (48010, "Stream setup"), (47990, "Sunshine settings (optional)")]))
+    return {"host": host, "checks": checks,
+            "note": "TCP checks do not prove video/audio UDP works. Stream traffic uses UDP 47998–48000. "
+                    "Use the same home LAN; no router port forwarding or UPnP is needed."}
 
 
 def browser(url):
@@ -154,23 +214,25 @@ def browser(url):
     if not binary:
         raise RuntimeError("Chromium is not installed")
     profile = HOME / ".config" / "bazzpi-browser"
-    run_in_front([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--new-window", url])
+    run_in_front([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--disable-background-mode", "--start-maximized", "--new-window", url])
 
 
 def moonlight_bin():
     binary = which(("moonlight-qt", "moonlight"))
     if not binary:
-        raise RuntimeError("Moonlight is not installed yet. Leave the Pi online and try again.")
+        raise RuntimeError("Moonlight is not installed. Run the Lite installer again.")
     return binary
 
 
 def moonlight_env():
     env = session_env()
-    env["H264_DECODER_HINT"] = "h264_v4l2m2m"
+    env.pop("H264_DECODER_HINT", None)
     return env
 
 
-def moonlight(host, app, width, height, fps, bitrate, codec):
+def moonlight(host, app, width, height, fps, bitrate, codec, decoder="auto"):
+    if host:
+        host = normalize_host(host)
     binary = moonlight_bin()
     env = moonlight_env()
     if not host:
@@ -191,9 +253,9 @@ def moonlight(host, app, width, height, fps, bitrate, codec):
             "--bitrate",
             str(bitrate),
             "--video-codec",
-            "H.264",
+            codec,
             "--video-decoder",
-            "hardware",
+            decoder,
             "--display-mode",
             "fullscreen",
         ],
@@ -202,23 +264,22 @@ def moonlight(host, app, width, height, fps, bitrate, codec):
 
 
 def start_pair(host):
-    if not HOST_RE.match(host):
-        raise RuntimeError("That address is not allowed")
+    host = normalize_host(host)
     binary = moonlight_bin()
     with PAIR_LOCK:
         old = PAIR.get(host)
         if old and old.get("proc") and old["proc"].poll() is None:
             old["proc"].kill()
-    tuck_shelf(True)
+    pin = f"{secrets.randbelow(10000):04d}"
     proc = subprocess.Popen(
-        [binary, "pair", host],
+        [binary, "pair", host, "--pin", pin],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=moonlight_env(),
+        env={**moonlight_env(), "QT_QPA_PLATFORM": "offscreen"},
         start_new_session=True,
     )
-    job = {"pin": "", "status": "waiting", "log": "", "proc": proc}
+    job = {"pin": pin, "status": "pin", "log": "", "proc": proc}
 
     def reader():
         try:
@@ -231,9 +292,14 @@ def start_pair(host):
         except Exception as exc:
             job["log"] += str(exc)
         code = proc.wait()
-        tuck_shelf(False)
         job["status"] = "paired" if code == 0 else "failed"
 
+    def expire():
+        if proc.poll() is None:
+            proc.kill()
+    timer = threading.Timer(120, expire)
+    timer.daemon = True
+    timer.start()
     threading.Thread(target=reader, daemon=True).start()
     with PAIR_LOCK:
         PAIR[host] = job
@@ -247,38 +313,29 @@ def public_pair(job):
 
 
 def list_apps(host):
-    if not HOST_RE.match(host):
-        raise RuntimeError("That address is not allowed")
+    host = normalize_host(host)
     binary = moonlight_bin()
     proc = subprocess.run(
         [binary, "list", host],
         capture_output=True,
         text=True,
         timeout=25,
-        env=session_env(),
+        env={**session_env(), "QT_QPA_PLATFORM": "offscreen"},
     )
-    text = (proc.stdout or "") + (proc.stderr or "")
-    apps = []
-    for line in text.splitlines():
-        line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
-        if not line or len(line) > 64:
-            continue
-        lower = line.lower()
-        if lower.startswith(("usage", "error", "failed", "connect", "please", "pin")):
-            continue
-        if line not in apps:
-            apps.append(line)
-    if proc.returncode != 0 and not apps:
-        raise RuntimeError(text.strip() or "Sunshine did not answer. Pair first, and check the address.")
-    return apps
+    if proc.returncode != 0:
+        raise RuntimeError(((proc.stderr or "") + (proc.stdout or ""))[-2000:].strip()
+                           or "Sunshine did not answer. Pair first and check the address.")
+    # Only stdout contains app names. Qt diagnostics on stderr are not games.
+    return list(dict.fromkeys(line.strip() for line in proc.stdout.splitlines()
+                             if line.strip() and line.strip() != "Loading app list..."))
 
 
 def update_status():
     try:
-        text = Path("/tmp/bazzpi-update-status").read_text().strip().splitlines()[0]
+        text = (HOME / ".local/state/bazzpi/update-status").read_text().strip().splitlines()[0]
     except (OSError, IndexError):
         return "unknown"
-    if text in {"updated", "current", "offline", "checking"}:
+    if text in {"updated", "current", "offline", "checking", "failed", "rollback", "disabled"}:
         return text
     return "unknown"
 
@@ -426,19 +483,41 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def read_json(self, limit=16384):
         length = int(self.headers.get("Content-Length", "0"))
-        if length > limit:
+        if length < 0 or length > limit:
             raise RuntimeError("Request is too large")
         raw = self.rfile.read(length) if length else b"{}"
-        return json.loads(raw.decode() or "{}")
+        data = json.loads(raw.decode() or "{}")
+        if not isinstance(data, dict):
+            raise RuntimeError("Expected an object")
+        return data
+
+    def trusted(self):
+        return self.headers.get("Host") == f"127.0.0.1:{PORT}" and self.headers.get("Sec-Fetch-Site", "same-origin") in ("same-origin", "none")
+
+    def authorized(self):
+        profile = read_profile()
+        return bool(profile) and (not profile.get("pin") or
+            (UNLOCKED and hmac.compare_digest(self.headers.get("X-Bazzpi-Token", ""), AUTH_TOKEN)))
 
     def do_GET(self):
+        if not self.trusted():
+            self.send_json(403, {"error": "Local shelf requests only"})
+            return
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/") and parsed.path not in {"/api/profile", "/api/status"} and not self.authorized():
+            self.send_json(401, {"error": "Unlock the shelf first"})
+            return
+        if parsed.path == "/api/launch-status":
+            with LAUNCH_LOCK:
+                self.send_json(200, dict(LAUNCH))
+            return
         if parsed.path == "/api/profile":
             self.send_json(200, public_profile(read_profile()))
             return
@@ -461,7 +540,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/moonlight/pair":
             query = parse_qs(parsed.query)
-            host = query.get("host", [""])[0]
+            try:
+                host = normalize_host(query.get("host", [""])[0])
+            except RuntimeError as exc:
+                self.send_json(400, {"error": str(exc)})
+                return
             with PAIR_LOCK:
                 job = PAIR.get(host)
             self.send_json(200, public_pair(job))
@@ -534,10 +617,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self):
+        global UNLOCKED
+        if not self.trusted() or self.headers.get("Origin") != f"http://127.0.0.1:{PORT}" or self.headers.get("Content-Type") != "application/json":
+            self.send_json(403, {"error": "Local shelf requests only"})
+            return
         parsed = urlparse(self.path)
+        if parsed.path not in {"/api/profile", "/api/unlock"} and not self.authorized():
+            self.send_json(401, {"error": "Unlock the shelf first"})
+            return
         try:
             body = self.read_json(12_000_000 if parsed.path == "/api/wallpaper" else 16384)
-        except (RuntimeError, json.JSONDecodeError) as exc:
+        except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
             return
         try:
@@ -556,21 +646,33 @@ class Handler(BaseHTTPRequestHandler):
                     record["salt"] = salt
                     record["pin"] = digest
                 write_profile(record)
+                UNLOCKED = True
+                self.send_json(200, {"ok": True, "token": AUTH_TOKEN})
+                return
             elif parsed.path == "/api/unlock":
                 data = read_profile()
                 if not data:
                     raise RuntimeError("Create a profile first.")
                 if not check_pin(data, str(body.get("pin") or "")):
+                    time.sleep(1)
                     raise RuntimeError("That code does not match.")
+                UNLOCKED = True
+                self.send_json(200, {"ok": True, "token": AUTH_TOKEN})
+                return
+            elif parsed.path == "/api/lock":
+                UNLOCKED = False
             elif parsed.path == "/api/launch":
                 kind = body.get("kind")
                 if kind in ("moonlight", "desktop"):
                     app = "Desktop" if kind == "desktop" else str(body.get("app") or "Steam")
                     width, height = (1280, 720) if body.get("resolution") == "720p" else (1920, 1080)
                     fps = 30 if int(body.get("fps") or 60) <= 30 else 60
-                    bitrate = max(2000, min(80000, int(body.get("bitrate") or 20000)))
+                    bitrate = max(2000, min(40000, int(body.get("bitrate") or 20000)))
                     codec = "HEVC" if body.get("codec") == "HEVC" else "H.264"
-                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate, codec)
+                    decoder = str(body.get("decoder") or "auto")
+                    if decoder not in {"auto", "hardware", "software"}:
+                        raise RuntimeError("Unknown decoder")
+                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate, codec, decoder)
                 elif kind == "browser":
                     url = str(body.get("url") or "https://www.google.com")
                     if not url.startswith(("http://", "https://")):
@@ -589,6 +691,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/moonlight/pair":
                 host = str(body.get("host") or "")
                 self.send_json(200, start_pair(host))
+                return
+            elif parsed.path == "/api/moonlight/diagnose":
+                self.send_json(200, diagnose(body.get("host", "")))
                 return
             elif parsed.path == "/api/moonlight/list":
                 host = str(body.get("host") or "")
