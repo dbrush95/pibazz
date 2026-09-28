@@ -230,7 +230,7 @@ def moonlight_env():
     return env
 
 
-def moonlight(host, app, width, height, fps, bitrate, codec, decoder="auto"):
+def moonlight(host, app, width, height, fps, bitrate, codec, decoder="auto", compatibility=False):
     if host:
         host = normalize_host(host)
     binary = moonlight_bin()
@@ -240,8 +240,7 @@ def moonlight(host, app, width, height, fps, bitrate, codec, decoder="auto"):
         return
     if not HOST_RE.match(host) or not APP_RE.match(app):
         raise RuntimeError("That address or app name is not allowed")
-    run_in_front(
-        [
+    command = [
             binary,
             "stream",
             host,
@@ -258,9 +257,10 @@ def moonlight(host, app, width, height, fps, bitrate, codec, decoder="auto"):
             decoder,
             "--display-mode",
             "fullscreen",
-        ],
-        env,
-    )
+        ]
+    if compatibility:
+        command += ["--packet-size", "1024", "--audio-config", "stereo", "--no-hdr"]
+    run_in_front(command, env)
 
 
 def start_pair(host):
@@ -514,6 +514,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/") and parsed.path not in {"/api/profile", "/api/status"} and not self.authorized():
             self.send_json(401, {"error": "Unlock the shelf first"})
             return
+        if parsed.path == "/api/system":
+            self.send_json(200, system_settings())
+            return
         if parsed.path == "/api/launch-status":
             with LAUNCH_LOCK:
                 self.send_json(200, dict(LAUNCH))
@@ -672,7 +675,10 @@ class Handler(BaseHTTPRequestHandler):
                     decoder = str(body.get("decoder") or "auto")
                     if decoder not in {"auto", "hardware", "software"}:
                         raise RuntimeError("Unknown decoder")
-                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate, codec, decoder)
+                    compatibility = body.get("compatibility") is True
+                    if compatibility:
+                        width, height, fps, bitrate, codec, decoder = 1280, 720, 30, 5000, "H.264", "auto"
+                    moonlight(str(body.get("host") or ""), app, width, height, fps, bitrate, codec, decoder, compatibility)
                 elif kind == "browser":
                     url = str(body.get("url") or "https://www.google.com")
                     if not url.startswith(("http://", "https://")):
@@ -686,6 +692,11 @@ class Handler(BaseHTTPRequestHandler):
                     retroarch(rom=str(body.get("path") or ""))
                 elif kind == "terminal":
                     terminal()
+                elif kind == "raspi-config":
+                    binary = which(("foot",))
+                    if not binary or not which(("raspi-config",)):
+                        raise RuntimeError("Run the Lite installer to install foot and raspi-config.")
+                    run_in_front([binary, "--title=Bazzpi settings", "sudo", "-n", "raspi-config"])
                 else:
                     raise RuntimeError("Unknown app")
             elif parsed.path == "/api/moonlight/pair":
@@ -732,17 +743,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif pactl:
                     spawn([pactl, "set-sink-volume", "@DEFAULT_SINK@", f"{level}%"])
             elif parsed.path == "/api/system":
-                if body.get("hostname"):
-                    name = str(body["hostname"])
-                    if not HOST_RE.match(name):
-                        raise RuntimeError("Hostname is not allowed")
-                    spawn(["sudo", "hostnamectl", "set-hostname", name])
-                if body.get("country"):
-                    spawn(["sudo", "raspi-config", "nonint", "do_wifi_country", str(body["country"])[:2].upper()])
-                if "ssh" in body:
-                    spawn(["sudo", "raspi-config", "nonint", "do_ssh", "0" if body["ssh"] else "1"])
-                if body.get("timezone"):
-                    spawn(["sudo", "timedatectl", "set-timezone", str(body["timezone"])])
+                self.send_json(200, apply_system(body))
+                return
             else:
                 self.send_error(404)
                 return
@@ -750,6 +752,78 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(exc)})
             return
         self.send_json(200, {"ok": True})
+
+
+def checked_command(argv):
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=20, env=session_env())
+    if proc.returncode:
+        raise RuntimeError((proc.stderr or proc.stdout).strip()[-1200:] or f"{Path(argv[0]).name} failed")
+    return proc.stdout.strip()
+
+
+def system_settings():
+    errors = []
+    def read(argv):
+        try:
+            return checked_command(argv)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            errors.append(str(exc))
+            return None
+    country = read(["sudo", "-n", "raspi-config", "nonint", "get_wifi_country"]) if which(("raspi-config",)) else None
+    timezone = read(["timedatectl", "show", "--property=Timezone", "--value"])
+    ssh = read(["systemctl", "show", "ssh.service", "--property=UnitFileState", "--value"])
+    sinks = []
+    default_sink = ""
+    if which(("pactl",)):
+        raw = read(["pactl", "--format=json", "list", "sinks"])
+        default_sink = read(["pactl", "get-default-sink"]) or ""
+        try:
+            sinks = [{"name": item["name"], "label": item.get("description", item["name"])} for item in json.loads(raw or "[]")]
+        except (ValueError, KeyError, TypeError):
+            errors.append("Audio outputs could not be read")
+    return {"hostname": os.uname().nodename, "country": country, "timezone": timezone,
+            "ssh": ssh in {"enabled", "enabled-runtime"} if ssh else None,
+            "sinks": sinks, "audio": default_sink, "errors": errors,
+            "raspiConfig": bool(which(("raspi-config",)))}
+
+
+def apply_system(body):
+    # Validate every value before the first system mutation; only known actions run.
+    commands = []
+    if "hostname" in body:
+        name = str(body["hostname"]).strip()
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", name):
+            raise RuntimeError("Hostname must be 1–63 letters, numbers or hyphens, without a leading/trailing hyphen.")
+        commands.append(("hostname", ["sudo", "-n", "raspi-config", "nonint", "do_hostname", name]))
+    if "country" in body:
+        country = str(body["country"]).upper().strip()
+        if not re.fullmatch(r"[A-Z]{2}", country):
+            raise RuntimeError("Wi-Fi country must be a two-letter country code, such as US.")
+        commands.append(("country", ["sudo", "-n", "raspi-config", "nonint", "do_wifi_country", country]))
+    if "timezone" in body:
+        zone = str(body["timezone"]).strip()
+        root = Path("/usr/share/zoneinfo").resolve()
+        path = (root / zone).resolve()
+        if not zone or root not in path.parents or not path.is_file():
+            raise RuntimeError("Choose a valid timezone, such as America/New_York.")
+        commands.append(("timezone", ["sudo", "-n", "timedatectl", "set-timezone", zone]))
+    if "ssh" in body:
+        if not isinstance(body["ssh"], bool):
+            raise RuntimeError("SSH must be on or off")
+        commands.append(("ssh", ["sudo", "-n", "raspi-config", "nonint", "do_ssh", "0" if body["ssh"] else "1"]))
+    if "audio" in body:
+        name = str(body["audio"])
+        if name not in {item["name"] for item in system_settings()["sinks"]}:
+            raise RuntimeError("That audio output is no longer available. Refresh settings.")
+        commands.append(("audio", ["pactl", "set-default-sink", name]))
+    applied = []
+    for key, command in commands:
+        try:
+            checked_command(command)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"Could not apply {key}: {exc}. Already applied: {', '.join(applied) or 'none'}.") from exc
+        applied.append(key)
+    return {"ok": True, "applied": applied, "rebootRecommended": "hostname" in applied}
 
 
 def main():

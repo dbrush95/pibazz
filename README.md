@@ -139,3 +139,19 @@ bash tools/moonlight-diagnostics.sh 192.168.1.20
 
 It writes `~/moonlight-diagnostics.txt` with OS/packages, video devices, audio status,
 TCP port results, and the last app log. Review it before sharing; it includes local host/user details.
+
+## Controller and settings polish
+
+- Left stick: shelf cursor (with a drift deadzone); right stick: scroll.
+- D-pad: move between visible controls; A: select; B: back/done; X: keyboard; Start: launcher.
+- Selecting a text field opens the keyboard. PIN fields use numbers and enforce four digits.
+- On a selector, A cycles options; D-pad left/right changes the selection.
+- The shelf's controller pointer and keyboard operate **inside the shelf**, not in native Chromium,
+  RetroArch, Moonlight, or the full raspi-config terminal. Native applications retain their own input.
+- Play now separates game launching from collapsible pairing, picture, and troubleshooting controls.
+- Settings → Pi reads actual hostname, Wi-Fi country, timezone, SSH and audio output. It validates
+  changes and waits for system commands before reporting success. Apply only sends changed values.
+- **Open full raspi-config** starts the standard tool in a terminal; use a physical keyboard there.
+  The shelf form covers the common options; it is not a clone of every raspi-config menu.
+- Rerun `install-lite.sh` once to add `pulseaudio-utils` for the audio output selector. The shelf code
+  and controller changes otherwise arrive through the existing reboot updater.

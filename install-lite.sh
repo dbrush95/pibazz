@@ -19,7 +19,7 @@ git clone --depth 1 --branch "$REF" https://github.com/dbrush95/pibazz.git "$STA
 SHA=$(git -C "$STAGE/repo" rev-parse HEAD)
 sudo apt-get update
 sudo apt-get install -y labwc seatd xwayland chromium foot wlrctl python3 nodejs curl \
-  ca-certificates dbus-user-session pipewire pipewire-pulse wireplumber \
+  ca-certificates dbus-user-session pipewire pipewire-pulse wireplumber pulseaudio-utils \
   libspa-0.2-bluetooth bluez fonts-noto-core raspi-config avahi-daemon libnss-mdns
 # Use the Pi-specific package source (generic Debian builds may lack Pi decoding).
 curl -fsSL --connect-timeout 10 --max-time 60 \
