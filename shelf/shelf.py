@@ -217,6 +217,26 @@ def browser(url):
     run_in_front([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland", "--disable-background-mode", "--start-maximized", "--new-window", url])
 
 
+# Fixed destinations only; browser permissions stay under the user's control.
+WEB_APPS = {
+    "gamepass": "https://www.xbox.com/play",
+    "geforcenow": "https://play.geforcenow.com/",
+    "driftguard": "https://driftguard.app/",
+}
+
+
+def web_app(kind):
+    if kind not in WEB_APPS:
+        raise RuntimeError("Unknown web app")
+    binary = which(("chromium", "chromium-browser"))
+    if not binary:
+        raise RuntimeError("Chromium is not installed. Run the Lite installer again.")
+    profile = HOME / ".config" / "bazzpi-webapps" / kind
+    run_in_front([binary, f"--user-data-dir={profile}", "--ozone-platform=wayland",
+                  "--disable-background-mode", "--start-maximized",
+                  f"--app={WEB_APPS[kind]}"])
+
+
 def moonlight_bin():
     binary = which(("moonlight-qt", "moonlight"))
     if not binary:
@@ -684,8 +704,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not url.startswith(("http://", "https://")):
                         raise RuntimeError("Only web addresses can be opened")
                     browser(url)
-                elif kind == "gamepass":
-                    browser("https://www.xbox.com/play")
+                elif kind in WEB_APPS:
+                    web_app(kind)
                 elif kind == "retropie":
                     retroarch(str(body.get("system") or ""))
                 elif kind == "rom":
