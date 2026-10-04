@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fetch one immutable commit. Never execute an installer or apt at boot.
-set -euo pipefail
+set -Eeuo pipefail
 DEST="${BAZZPI_DEST:-/opt/bazzpi-shelf}"
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/bazzpi"
 mkdir -p "$STATE" "$DEST/releases"
@@ -26,9 +26,25 @@ fi
 if [ -f "$STATE/rejected-revision" ] && [ "$(cat "$STATE/rejected-revision")" = "$SHA" ]; then
   echo rollback > "$STATUS"; exit 0
 fi
+# After one raw-host failure, use the API for the rest of this update.
+# The API serves file bytes directly with this Accept header (no raw-host redirect).
+USE_API=0
+fetch_file() {
+  local file="$1"
+  if [ "$USE_API" = 0 ]; then
+    if curl -fsSL --connect-timeout 3 --max-time 8 "https://raw.githubusercontent.com/dbrush95/pibazz/$SHA/shelf/$file" -o "$STAGE/$file"; then
+      return 0
+    fi
+    echo "Raw download failed; trying GitHub Contents API with TLS verification."
+    USE_API=1
+  fi
+  curl -fsSL --connect-timeout 3 --max-time 8 \
+    -H 'Accept: application/vnd.github.raw+json' \
+    "https://api.github.com/repos/dbrush95/pibazz/contents/shelf/$file?ref=$SHA" -o "$STAGE/$file"
+}
 FILES=(index.html shelf.css shelf.js shelf.py update.sh bazzpi-shelf)
 for file in "${FILES[@]}"; do
-  curl -fsSL --connect-timeout 3 --max-time 8 "https://raw.githubusercontent.com/dbrush95/pibazz/$SHA/shelf/$file" -o "$STAGE/$file"
+  fetch_file "$file"
   test -s "$STAGE/$file"
 done
 python3 -m py_compile "$STAGE/shelf.py"

@@ -193,3 +193,18 @@ on-device acceptance testing.
 
 References: [NVIDIA requirements](https://www.nvidia.com/en-us/geforce-now/system-reqs/),
 [DriftGuard](https://driftguard.app/).
+
+
+### Updater: raw GitHub TLS failures
+
+If api.github.com works but raw.githubusercontent.com fails, the updater now
+falls back to GitHub's Contents API for the same pinned commit. TLS certificate
+verification and staging/syntax checks remain enabled. After the first raw-host
+failure, remaining files use the API directly. API rate limits or another failed
+download leave the active release untouched. The existing boot timeout still
+applies; a manual update after the network is ready has no whole-run timeout.
+
+An older updater cannot fetch this fix through a broken raw-host connection.
+Download the new `shelf/update.sh` through the Contents API with the
+`Accept: application/vnd.github.raw+json` header, save to a temporary file, check
+it with `bash -n`, then run it as your normal Pi user. Do not disable TLS checks.
