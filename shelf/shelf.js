@@ -3,6 +3,8 @@ const APPS = [
   ["desktop", "Desktop"],
   ["retropie", "RetroArch"],
   ["gamepass", "Game Pass"],
+  ["geforcenow", "GeForce NOW"],
+  ["driftguard", "DriftGuard"],
   ["browser", "Browser"],
   ["files", "Files"],
   ["terminal", "Terminal"],
@@ -30,6 +32,8 @@ const ICONS = {
   desktop: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>',
   retropie: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 11v2M17 11v2M8 16h8"/><rect x="2" y="7" width="20" height="10" rx="3"/></svg>',
   gamepass: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a5 5 0 0 1 0-10 6 6 0 0 1 11 2 4 4 0 0 1 0 8H7z"/></svg>',
+  geforcenow: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 18a5 5 0 0 1 0-10 6 6 0 0 1 11 2 4 4 0 0 1 0 8H7z"/><path d="m13 8-3 5h4l-3 5"/></svg>',
+  driftguard: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
   browser: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>',
   files: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   terminal: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg>',
@@ -240,7 +244,7 @@ function bodyFor(id) {
   if (id === "play") return playBody(false);
   if (id === "desktop") return playBody(true);
   if (id === "retropie") return retroBody();
-  if (id === "gamepass") return gameBody();
+  if (["gamepass", "geforcenow", "driftguard"].includes(id)) return webAppBody(id);
   if (id === "browser") return browserBody();
   if (id === "terminal") return terminalBody();
   if (id === "files") return `<div id="files">Loading the Pi…</div>`;
@@ -391,11 +395,23 @@ function retroBody() {
     ${picked ? `<div class="preview">${escapeHtml(picked[0])}\nPut games in ~/ROMs/${escapeHtml(picked[1])}\nThen open RetroArch, or click the game in Files.</div>` : `<p class="fine">Games go in ~/ROMs. Click a game in Files and it opens here.</p>`}`;
 }
 
-function gameBody() {
-  return `<h1 class="h1">Game Pass</h1>
-    <p class="sub">${escapeHtml(state.profile.name)}, this opens Xbox Cloud Gaming in Chromium. It needs Game Pass Ultimate. The Pi streams the picture. It does not install the games.</p>
-    <button type="button" class="btn primary" data-stream="gamepass">Open Xbox Cloud Gaming</button>
-    <p class="fine">xbox.com/play</p>`;
+function webAppBody(id) {
+  const apps = {
+    gamepass: {name: "Game Pass", kicker: "Cloud gaming", button: "Open Xbox Cloud Gaming",
+      description: "Play supported Xbox games over the internet. Sign in with your Microsoft account; subscription requirements depend on the game.",
+      note: "Your Xbox sign-in is saved in its own app window. You will need to sign in once after this update."},
+    geforcenow: {name: "GeForce NOW", kicker: "Cloud gaming", button: "Open GeForce NOW",
+      description: "Stream supported games from your PC game libraries through NVIDIA. Sign in with your NVIDIA account to get started.",
+      note: "Uses the web player on Raspberry Pi. NVIDIA’s native Linux app requires an x86/x64 PC. Pi browser compatibility and streaming performance may vary; start at 720p."},
+    driftguard: {name: "DriftGuard", kicker: "Controller workshop", button: "Open DriftGuard",
+      description: "Check sticks, buttons and drift on a controller connected to this Pi. Connect by USB first, then choose your controller in DriftGuard.",
+      note: "Approve the browser’s device prompt if requested. Available tests and calibration depend on your controller and Linux device permissions. Testing does not automatically change PiBazz or Moonlight deadzones."},
+  };
+  const app = apps[id];
+  return `<div class="page-head"><p class="kicker">${app.kicker}</p><h1 class="h1">${app.name}</h1><p class="sub">${app.description}</p></div>
+    <button type="button" class="btn primary" data-stream="${id}">${app.button}</button>
+    <p class="fine">${app.note}</p>
+    <p class="fine">Opens in a dedicated app window. Close it to return, or press Super + H for Home. Initial sign-in or device selection may need a mouse and keyboard.</p>`;
 }
 
 function terminalBody() {
@@ -503,7 +519,7 @@ function settingsBody() {
   } else {
     const pi = state.pi;
     pane = `<div class="page-head"><p class="kicker">This device</p><h1 class="h1">Raspberry Pi</h1><p class="sub">System settings read directly from your Pi.</p></div>
-      <div class="row"><button class="btn" data-refresh-pi>${state.piLoading ? "Reading…" : "Refresh settings"}</button><button class="btn" data-stream="raspi-config">Open full raspi-config</button></div>
+      <div class="row"><button class="btn" data-refresh-pi>${state.piLoading ? "Reading…" : "Refresh settings"}</button><button class="btn" data-stream="raspi-config">Open full raspi-config</button><button class="btn" data-app="driftguard">Controller tests</button></div>
       <p class="fine">The full tool opens in a terminal and needs a keyboard. Finish closes it and returns here.</p>
       ${state.piError ? `<p class="settings-error" role="alert">${escapeHtml(state.piError)}</p>` : ""}
       ${pi ? `<div class="form-grid"><label>Hostname<input class="field" data-hostname value="${escapeHtml(pi.hostname)}" /></label><label>Wi-Fi country<input class="field" data-country value="${escapeHtml(pi.country || "")}" maxlength="2" placeholder="US" /></label></div>

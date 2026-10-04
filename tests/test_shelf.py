@@ -111,3 +111,24 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.request('/api/file?path=../outside')[0], 400)
 
 if __name__ == '__main__': unittest.main()
+
+
+class WebAppTests(unittest.TestCase):
+    def test_apps_have_isolated_profiles_and_fixed_destinations(self):
+        profiles = set()
+        with patch.object(shelf, 'which', return_value='/usr/bin/chromium'), patch.object(shelf, 'run_in_front') as run:
+            for kind, url in shelf.WEB_APPS.items():
+                shelf.web_app(kind)
+                args = run.call_args.args[0]
+                self.assertIn('--app=' + url, args)
+                self.assertIn('--disable-background-mode', args)
+                profiles.add(next(arg for arg in args if arg.startswith('--user-data-dir=')))
+            self.assertEqual(len(profiles), 3)
+            run.reset_mock()
+            with self.assertRaises(RuntimeError): shelf.web_app('../../shelf')
+            run.assert_not_called()
+
+    def test_missing_browser_is_actionable(self):
+        with patch.object(shelf, 'which', return_value=None):
+            with self.assertRaisesRegex(RuntimeError, 'Lite installer'):
+                shelf.web_app('geforcenow')

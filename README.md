@@ -155,3 +155,41 @@ TCP port results, and the last app log. Review it before sharing; it includes lo
   The shelf form covers the common options; it is not a clone of every raspi-config menu.
 - Rerun `install-lite.sh` once to add `pulseaudio-utils` for the audio output selector. The shelf code
   and controller changes otherwise arrive through the existing reboot updater.
+
+
+## Cloud apps and controller testing (Lite)
+
+GeForce NOW and DriftGuard now appear beside Game Pass in the launcher and shelf.
+Settings → Pi → Controller tests also opens the DriftGuard card.
+All three launch Chromium in a maximized app window without normal browser tabs.
+Close the app to return to the shelf, or use Super+H for Home / Alt+Tab to switch back.
+Only one external app runs at a time. Initial sign-in and device selection may need
+a keyboard and mouse; shelf controller pointer/keyboard support does not extend into these windows.
+
+- **GeForce NOW:** opens https://play.geforcenow.com/. NVIDIA's native Linux app
+  requires x86/x64 hardware; it is not a native Raspberry Pi ARM app. Pi OS browser
+  streaming is not guaranteed supported. Test a session at 720p before increasing
+  resolution. This is an internet service, separate from local Moonlight/Sunshine.
+- **Game Pass:** opens https://www.xbox.com/play. Subscription requirements depend
+  on the game. The new dedicated app profile requires signing in once again;
+  existing general-browser data is preserved.
+- **DriftGuard:** opens https://driftguard.app/ for controller testing and supported
+  calibration. Connect a controller to the Pi, preferably USB for first testing,
+  then select it on the site and approve its device chooser. Features depend on
+  controller, browser APIs and Linux device permissions. No broad hidraw/USB
+  permissions or automatic calibration are installed. DriftGuard does not change
+  PiBazz's shelf deadzone or Moonlight settings automatically.
+
+Each app stores persistent cookies/settings separately under
+`~/.config/bazzpi-webapps/{gamepass,geforcenow,driftguard}`. These belong to the Linux
+user, not separate PiBazz profile names. Use the service's sign-out control when
+changing accounts. The normal Browser profile stays at `~/.config/bazzpi-browser`.
+
+These shelf-only changes arrive through the existing reboot updater; no new apt
+packages are required on an up-to-date Lite installation. Automated tests verify
+launch arguments, profile separation, and UI actions. Real Pi streaming, login
+popups, WebHID/WebUSB permissions, controller testing and window return still need
+on-device acceptance testing.
+
+References: [NVIDIA requirements](https://www.nvidia.com/en-us/geforce-now/system-reqs/),
+[DriftGuard](https://driftguard.app/).

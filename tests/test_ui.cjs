@@ -46,3 +46,10 @@ assert.equal(field.value,'1234');
 run('typeInto("back")');
 assert.equal(field.value,'123');
 console.log('On-screen PIN typing, maxlength, numeric filtering and backspace passed.');
+
+for (const id of ['gamepass', 'geforcenow', 'driftguard']) {
+  assert.match(run(`webAppBody("${id}")`), new RegExp(`data-stream="${id}"`));
+  assert.ok(run(`APPS.some(([id]) => id === "${id}")`));
+  assert.ok(run(`ICONS["${id}"]`));
+}
+assert.match(run('settingsBody()'), /data-app="driftguard"/);
